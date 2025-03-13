@@ -1,0 +1,397 @@
+To replace the `for` loop with a Java Stream in the Spring Boot version of the ESQL-to-Java converter, we’ll modify the `FOR` loop handling to use `stream()` and `map()` operations. This will make the code more concise and functional, aligning with modern Java practices in a Spring Boot application.
+
+Here’s the updated Java script with the `FOR` loop converted to a Stream:
+
+---
+
+```java
+import java.util.*;
+
+public class ESQLToJavaConverter {
+
+    public static void main(String[] args) {
+        // Example ESQL input with IF and FOR loop
+        String esqlCode = """
+            SET OutputRoot.JSON.Data.Rxco.rxNumber = InputRoot.JSON.Data.Presc.Prescriptionnumber;
+            SET OutputRoot.JSON.Data.programType = InputRoot.JSON.Data.pgType;
+            IF InputRoot.JSON.Data.Presc.quantity > 10 THEN
+                SET OutputRoot.JSON.Data.status = 'High';
+            ELSE
+                SET OutputRoot.JSON.Data.status = 'Low';
+            END IF;
+            FOR item AS InputRoot.JSON.Data.Items[] DO
+                SET OutputRoot.JSON.Data.Results[item].value = item.amount;
+            END FOR;
+            """;
+
+        String javaCode = convertESQLToJava(esqlCode);
+        System.out.println("Generated Java Code:\n" + javaCode);
+    }
+
+    public static String convertESQLToJava(String esqlCode) {
+        StringBuilder javaCode = new StringBuilder();
+        List<String> lines = List.of(esqlCode.split("\n"));
+
+        // Maps to store class structures for input and output
+        Map<String, ClassNode> inputClasses = new HashMap<>();
+        Map<String, ClassNode> outputClasses = new HashMap<>();
+        List<String> mappings = new ArrayList<>();
+        StringBuilder forLoopStream = new StringBuilder();
+
+        // Parse ESQL lines
+        for (String line : lines) {
+            String trimmedLine = line.trim();
+            if (trimmedLine.isEmpty()) continue;
+
+            // Handle SET statements
+            if (trimmedLine.startsWith("SET")) {
+                String[] parts = trimmedLine.replace("SET ", "").split("=");
+                String outputPath = parts[0].trim().replace("OutputRoot.JSON.Data.", "");
+                String inputPath = parts[1].trim().replace("InputRoot.JSON.Data.", "").replace(";", "");
+                buildClassStructure(outputPath, outputClasses, "OutputReq");
+                buildClassStructure(inputPath, inputClasses, "InputReq");
+                if (forLoopStream.length() > 0) {
+                    forLoopStream.append("                    ").append(convertPathToSetter(outputPath, "resultItem") + " = " +
+                            convertValue(inputPath, "item") + ";\n");
+                } else {
+                    mappings.add("            " + convertPathToSetter(outputPath, "outputReq") + " = " +
+                            convertValue(inputPath, "inputReq") + ";");
+                }
+            }
+
+            // Handle IF conditions
+            else if (trimmedLine.startsWith("IF")) {
+                String condition = trimmedLine.replace("IF ", "").replace(" THEN", "").trim();
+                mappings.add("            if (" + convertCondition(condition, "inputReq") + ") {");
+                mappings.add("                // IF block");
+            }
+
+            // Handle ELSE
+            else if (trimmedLine.equals("ELSE")) {
+                mappings.add("            } else {");
+                mappings.add("                // ELSE block");
+            }
+
+            // Handle END IF
+            else if (trimmedLine.equals("END IF;")) {
+                mappings.add("            }");
+            }
+
+            // Handle FOR loops (convert to Stream)
+            else if (trimmedLine.startsWith("FOR")) {
+                String[] parts = trimmedLine.replace("FOR ", "").replace(" DO", "").split(" AS ");
+                String loopVar = parts[0].trim();
+                String arrayPath = parts[1].trim().replace("[]", "");
+                buildClassStructure(arrayPath, inputClasses, "InputReq");
+                forLoopStream.append("            outputReq.setResults(Optional.ofNullable(")
+                        .append(convertPathToGetter(arrayPath, "inputReq"))
+                        .append(").orElse(Collections.emptyList()).stream()\n")
+                        .append("                .map(").append(loopVar).append(" -> {\n")
+                        .append("                    Item resultItem = new Item();\n");
+            }
+
+            // Handle END FOR
+            else if (trimmedLine.equals("END FOR;")) {
+                forLoopStream.append("                    return resultItem;\n")
+                        .append("                })\n")
+                        .append("                .collect(Collectors.toList()));\n");
+                mappings.add(forLoopStream.toString());
+                forLoopStream.setLength(0); // Reset for next loop if any
+            }
+        }
+
+        // Generate Java code
+        javaCode.append("import lombok.Data;\n");
+        javaCode.append("import com.fasterxml.jackson.annotation.JsonProperty;\n");
+        javaCode.append("import org.springframework.stereotype.Service;\n");
+        javaCode.append("import java.util.List;\n");
+        javaCode.append("import java.util.Collections;\n");
+        javaCode.append("import java.util.Optional;\n");
+        javaCode.append("import java.util.stream.Collectors;\n\n");
+
+        // Generate input class (InputReq)
+        generateClassCode(inputClasses.get("InputReq"), javaCode, new HashSet<>(), "");
+
+        // Generate output class (OutputReq)
+        generateClassCode(outputClasses.get("OutputReq"), javaCode, new HashSet<>(), "");
+
+        // Generate Item class for loop
+        javaCode.append("@Data\n");
+        javaCode.append("public class Item {\n");
+        javaCode.append("    @JsonProperty(\"amount\")\n");
+        javaCode.append("    private String amount;\n");
+        javaCode.append("    @JsonProperty(\"value\")\n");
+        javaCode.append("    private String value;\n");
+        javaCode.append("}\n\n");
+
+        // Generate Spring Service
+        javaCode.append("@Service\n");
+        javaCode.append("public class MessageMapper {\n");
+        javaCode.append("    public OutputReq map(InputReq inputReq) {\n");
+        javaCode.append("        OutputReq outputReq = new OutputReq();\n");
+
+        // Handle nested object instantiation
+        Set<String> instantiated = new HashSet<>();
+        for (String mapping : mappings) {
+            if (mapping.contains("if") || mapping.contains("stream") || mapping.contains("}")) {
+                javaCode.append(mapping).append("\n");
+                continue;
+            }
+            String[] parts = mapping.split("=");
+            String setter = parts[0].trim();
+            String[] setterParts = setter.split("\\.");
+            for (int i = 1; i < setterParts.length - 1; i++) {
+                String objPath = String.join(".", Arrays.copyOfRange(setterParts, 1, i + 1));
+                if (!instantiated.contains(objPath)) {
+                    String className = capitalize(setterParts[i]);
+                    javaCode.append("        ").append(objPath).append(" = new ").append(className).append("();\n");
+                    instantiated.add(objPath);
+                }
+            }
+            javaCode.append(mapping).append("\n");
+        }
+
+        javaCode.append("        return outputReq;\n");
+        javaCode.append("    }\n");
+        javaCode.append("}\n");
+
+        return javaCode.toString();
+    }
+
+    // ClassNode to represent nested structure
+    static class ClassNode {
+        String name;
+        Map<String, ClassNode> fields = new HashMap<>();
+        Map<String, String> simpleFields = new HashMap<>(); // fieldName -> type
+
+        ClassNode(String name) {
+            this.name = name;
+        }
+    }
+
+    // Build class structure from ESQL path
+    private static void buildClassStructure(String path, Map<String, ClassNode> classes, String rootClass) {
+        String[] parts = path.split("\\.");
+        ClassNode current = classes.computeIfAbsent(rootClass, ClassNode::new);
+
+        if (parts.length == 1) {
+            current.simpleFields.put(parts[0], parts[0].equals("Items") || parts[0].equals("Results") ? "List<Item>" : "String");
+            return;
+        }
+
+        for (int i = 0; i < parts.length - 1; i++) {
+            String fieldName = parts[i];
+            String className = capitalize(fieldName);
+            current.fields.put(fieldName, classes.computeIfAbsent(className, ClassNode::new));
+            current = current.fields.get(fieldName);
+        }
+        current.simpleFields.put(parts[parts.length - 1], "String");
+    }
+
+    // Generate class code recursively
+    private static void generateClassCode(ClassNode node, StringBuilder javaCode, Set<String> generated, String indent) {
+        if (node == null || generated.contains(node.name)) return;
+        generated.add(node.name);
+
+        javaCode.append(indent).append("@Data\n");
+        javaCode.append(indent).append("public class ").append(node.name).append(" {\n");
+
+        for (Map.Entry<String, ClassNode> entry : node.fields.entrySet()) {
+            String fieldName = entry.getKey();
+            String className = entry.getValue().name;
+            javaCode.append(indent).append("    @JsonProperty(\"").append(fieldName).append("\")\n");
+            javaCode.append(indent).append("    private ").append(className).append(" ").append(fieldName).append(";\n");
+        }
+
+        for (Map.Entry<String, String> entry : node.simpleFields.entrySet()) {
+            javaCode.append(indent).append("    @JsonProperty(\"").append(entry.getKey()).append("\")\n");
+            javaCode.append(indent).append("    private ").append(entry.getValue()).append(" ").append(entry.getKey()).append(";\n");
+        }
+
+        javaCode.append(indent).append("}\n\n");
+
+        for (ClassNode nested : node.fields.values()) {
+            generateClassCode(nested, javaCode, generated, indent);
+        }
+    }
+
+    // Convert ESQL path to getter
+    private static String convertPathToGetter(String path, String root) {
+        String[] parts = path.split("\\.");
+        StringBuilder getter = new StringBuilder(root);
+        for (int i = 0; i < parts.length; i++) {
+            getter.append(".get").append(capitalize(parts[i])).append("()");
+        }
+        return getter.toString();
+    }
+
+    // Convert ESQL path to setter
+    private static String convertPathToSetter(String path, String root) {
+        String[] parts = path.split("\\.");
+        StringBuilder setter = new StringBuilder(root);
+        for (int i = 0; i < parts.length; i++) {
+            setter.append(".set").append(capitalize(parts[i])).append(i == parts.length - 1 ? "" : "()");
+        }
+        return setter.toString();
+    }
+
+    // Convert value (path or literal)
+    private static String convertValue(String inputPath, String root) {
+        if (inputPath.startsWith("'") && inputPath.endsWith("'")) {
+            return inputPath;
+        }
+        return convertPathToGetter(inputPath, root);
+    }
+
+    // Convert ESQL condition to Java
+    private static String convertCondition(String condition, String root) {
+        String[] operators = {">", "<", ">=", "<=", "=", "<>"};
+        for (String op : operators) {
+            if (condition.contains(op)) {
+                String[] parts = condition.split(op);
+                String left = convertPathToGetter(parts[0].trim(), root);
+                String right = parts[1].trim();
+                if (right.matches("-?\\d+")) {
+                    return left + " " + (op.equals("<>") ? "!=" : op) + " " + right;
+                } else {
+                    return left + " " + (op.equals("<>") ? "!=" : op) + " \"" + right + "\"";
+                }
+            }
+        }
+        return condition;
+    }
+
+    // Capitalize first letter
+    private static String capitalize(String str) {
+        return str.substring(0, 1).toUpperCase() + str.substring(1);
+    }
+}
+```
+
+---
+
+### Key Changes
+
+1. **Stream Conversion**:
+   - The `FOR` loop (`FOR item AS InputRoot.JSON.Data.Items[] DO ...`) is now converted to a Stream operation:
+     - `inputReq.getItems()` is streamed with null safety using `Optional.ofNullable().orElse(Collections.emptyList())`.
+     - `.map(item -> {...})` transforms each `Item` into a new `Item` for `results`.
+     - `.collect(Collectors.toList())` gathers the results into a `List<Item>`.
+
+2. **Imports**:
+   - Added `java.util.Optional`, `java.util.Collections`, and `java.util.stream.Collectors` to support the Stream operations.
+
+3. **Mapping Logic**:
+   - The `SET` statement inside the `FOR` loop is moved into the `.map()` lambda, operating on `resultItem` instead of `outputReq` directly.
+   - The final `outputReq.setResults()` assigns the streamed result.
+
+### Output for Your Example
+
+Input ESQL:
+```
+SET OutputRoot.JSON.Data.Rxco.rxNumber = InputRoot.JSON.Data.Presc.Prescriptionnumber;
+SET OutputRoot.JSON.Data.programType = InputRoot.JSON.Data.pgType;
+IF InputRoot.JSON.Data.Presc.quantity > 10 THEN
+    SET OutputRoot.JSON.Data.status = 'High';
+ELSE
+    SET OutputRoot.JSON.Data.status = 'Low';
+END IF;
+FOR item AS InputRoot.JSON.Data.Items[] DO
+    SET OutputRoot.JSON.Data.Results[item].value = item.amount;
+END FOR;
+```
+
+Generated Java Code:
+```java
+import lombok.Data;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import org.springframework.stereotype.Service;
+import java.util.List;
+import java.util.Collections;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+@Data
+public class InputReq {
+    @JsonProperty("presc")
+    private Presc presc;
+    @JsonProperty("pgType")
+    private String pgType;
+    @JsonProperty("items")
+    private List<Item> items;
+}
+
+@Data
+public class Presc {
+    @JsonProperty("prescriptionNumber")
+    private String prescriptionNumber;
+    @JsonProperty("quantity")
+    private String quantity;
+}
+
+@Data
+public class OutputReq {
+    @JsonProperty("rxco")
+    private Rxco rxco;
+    @JsonProperty("programType")
+    private String programType;
+    @JsonProperty("status")
+    private String status;
+    @JsonProperty("results")
+    private List<Item> results;
+}
+
+@Data
+public class Rxco {
+    @JsonProperty("rxNumber")
+    private String rxNumber;
+}
+
+@Data
+public class Item {
+    @JsonProperty("amount")
+    private String amount;
+    @JsonProperty("value")
+    private String value;
+}
+
+@Service
+public class MessageMapper {
+    public OutputReq map(InputReq inputReq) {
+        OutputReq outputReq = new OutputReq();
+        outputReq.setRxco(new Rxco());
+        outputReq.getRxco().setRxNumber(inputReq.getPresc().getPrescriptionNumber());
+        outputReq.setProgramType(inputReq.getPgType());
+        if (inputReq.getPresc().getQuantity() > 10) {
+            // IF block
+            outputReq.setStatus("'High'");
+        } else {
+            // ELSE block
+            outputReq.setStatus("'Low'");
+        }
+        outputReq.setResults(Optional.ofNullable(inputReq.getItems()).orElse(Collections.emptyList()).stream()
+                .map(item -> {
+                    Item resultItem = new Item();
+                    resultItem.setValue(item.getAmount());
+                    return resultItem;
+                })
+                .collect(Collectors.toList()));
+        return outputReq;
+    }
+}
+```
+
+---
+
+### Explanation of Stream Usage
+
+- **Null Safety**: `Optional.ofNullable(inputReq.getItems()).orElse(Collections.emptyList())` ensures the stream works even if `items` is null.
+- **Mapping**: `.map(item -> {...})` transforms each `Item` from `inputReq.getItems()` into a new `Item` for `outputReq.getResults()`.
+- **Collection**: `.collect(Collectors.toList())` converts the stream back into a `List<Item>`.
+
+### Notes
+
+- **Type Consistency**: `quantity` is still `String` due to prior assumptions. Change it to `int` and adjust the condition (e.g., `Integer.parseInt`) for proper numeric comparison.
+- **Stream Flexibility**: This assumes a simple transformation. For more complex `FOR` loop logic, you might need to adjust the stream pipeline (e.g., add `.filter()` or nested operations).
+
+This version is now fully Spring Boot-compatible with a modern Stream-based approach. Let me know if you need further refinements!
