@@ -30,10 +30,25 @@ public class GenericEsqlToJavaConverter {
     public static Set<String> extractFields(List<String> setStatements, String prefix) {
         Set<String> fields = new HashSet<>();
         for (String statement : setStatements) {
-            String[] parts = statement.split("=");
-            String field = parts[0].trim().split("\\.")[2]; // e.g., output.fieldName -> fieldName
-            if (parts[0].trim().startsWith(prefix)) {
-                fields.add(field);
+            try {
+                String[] parts = statement.split("=");
+                if (parts.length < 2) {
+                    System.err.println("Invalid SET statement: " + statement);
+                    continue;
+                }
+                String left = parts[0].trim(); // e.g., output.fieldName
+                String[] leftParts = left.split("\\.");
+                if (leftParts.length < 3) {
+                    System.err.println("Invalid field reference: " + left);
+                    continue;
+                }
+                String field = leftParts[2]; // e.g., output.fieldName -> fieldName
+                if (left.startsWith(prefix)) {
+                    fields.add(field);
+                }
+            } catch (Exception e) {
+                System.err.println("Error parsing SET statement: " + statement);
+                e.printStackTrace();
             }
         }
         return fields;
@@ -75,10 +90,25 @@ public class GenericEsqlToJavaConverter {
 
         // Process SET statements
         for (String statement : constructs.get("SET")) {
-            String[] parts = statement.split("=");
-            String left = parts[0].trim(); // e.g., output.fieldName
-            String right = parts[1].trim(); // e.g., input.fieldName
-            code.append("        output.set").append(capitalize(left.split("\\.")[2])).append("(").append(right).append(");\n");
+            try {
+                String[] parts = statement.split("=");
+                if (parts.length < 2) {
+                    System.err.println("Invalid SET statement: " + statement);
+                    continue;
+                }
+                String left = parts[0].trim(); // e.g., output.fieldName
+                String right = parts[1].trim(); // e.g., input.fieldName
+                String[] leftParts = left.split("\\.");
+                if (leftParts.length < 3) {
+                    System.err.println("Invalid field reference: " + left);
+                    continue;
+                }
+                String field = leftParts[2]; // e.g., output.fieldName -> fieldName
+                code.append("        output.set").append(capitalize(field)).append("(").append(right).append(");\n");
+            } catch (Exception e) {
+                System.err.println("Error processing SET statement: " + statement);
+                e.printStackTrace();
+            }
         }
 
         // Process FOR loops
@@ -126,6 +156,9 @@ public class GenericEsqlToJavaConverter {
 
     // Helper method to capitalize the first letter of a string
     private static String capitalize(String str) {
+        if (str == null || str.isEmpty()) {
+            return str;
+        }
         return str.substring(0, 1).toUpperCase() + str.substring(1);
     }
 
