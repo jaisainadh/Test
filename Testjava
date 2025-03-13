@@ -1,0 +1,203 @@
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class EsqlToJavaConverter {
+    private static String inputFile = "input.esql";
+    private static String outputDir = ".";
+
+    // Templates for Java code
+    private static final String JAVA_CLASS_TEMPLATE = "public class %s {\n%s\n\n    // Default constructor\n    public %s() {}\n\n    // Parameterized constructor\n    public %s(%s) {\n%s\n    }\n\n%s\n}\n";
+    private static final String JAVA_TRANSFORMER_TEMPLATE = "public class %s {\n    public %s transform(%s input) {\n        %s output = new %s();\n%s\n        return output;\n    }\n}\n";
+
+    public static void main(String[] args) {
+        // Handle command-line arguments
+        if (args.length > 0) inputFile = args[0];
+        if (args.length > 1) outputDir = args[1];
+
+        try {
+            EsqlToJavaConverter converter = new EsqlToJavaConverter();
+            String esqlContent = converter.readFile(inputFile);
+            converter.convertEsqlToJava(esqlContent);
+            System.out.println("Conversion complete. Check " + outputDir + " for output files.");
+        } catch (IOException e) {
+            System.err.println("Error: " + e.getMessage());
+        }
+    }
+
+    private String readFile(String filePath) throws IOException {
+        StringBuilder content = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                content.append(line).append("\n");
+            }
+        }
+        return content.toString();
+    }
+
+    private void convertEsqlToJava(String esqlContent) throws IOException {
+        // Extract module name
+        Pattern modulePattern = Pattern.compile("CREATE\\s+COMPUTE\\s+MODULE\\s+(\\w+)");
+        Matcher moduleMatcher = modulePattern.matcher(esqlContent);
+        String moduleName = moduleMatcher.find() ? moduleMatcher.group(1) : "GeneratedClass";
+        String className = moduleName;
+        String transformerName = moduleName + "Transformer";
+
+        // Parse fields and logic
+        Map<String, String> fields = new HashMap<>();
+        List<String> logic = new ArrayList<>();
+
+        parseEsql(esqlContent, fields, logic);
+
+        // Generate and write Java files
+        generateJavaClass(className, fields);
+        generateJavaTransformer(className, transformerName, logic);
+    }
+
+    private void parseEsql(String content, Map<String, String> fields, List<String> logic) {
+        // Patterns for various ESQL constructs
+        Pattern setPattern = Pattern.compile("SET\\s+OutputRoot\\.(\\w+)\\.(\\w+)(?:\\.(\\w+))?\\s*=\\s*([^;]+);");
+        Pattern ifPattern = Pattern.compile("IF\\s+([^THEN]+)THEN\\s+(.+?)END\\s+IF;", Pattern.DOTALL);
+        Pattern whilePattern = Pattern.compile("WHILE\\s+([^DO]+)DO\\s+(.+?)END\\s+WHILE;", Pattern.DOTALL);
+        Pattern declarePattern = Pattern.compile("DECLARE\\s+(\\w+)\\s+(\\w+)\\s*([^;]*);");
+
+        // Parse DECLARE statements (variables)
+        Matcher declareMatcher = declarePattern.matcher(content);
+        while (declareMatcher.find()) {
+            String varName = declareMatcher.group(1);
+            String varType = mapEsqlTypeToJava(declareMatcher.group(2));
+            String initValue = declareMatcher.group(3).trim();
+            fields.put(varName, varType);
+            if (!initValue.isEmpty()) {
+                logic.add(String.format("        output.set%s(%s);", capitalize(varName), initValue));
+            }
+        }
+
+        // Parse SET statements
+        Matcher setMatcher = setPattern.matcher(content);
+        while (setMatcher.find()) {
+            String domain = setMatcher.group(1); // e.g., XMLNSC, JSON
+            String entity = setMatcher.group(2); // e.g., Order
+            String field = setMatcher.group(3) != null ? setMatcher.group(3) : entity; // Handle nested or flat
+            String value = setMatcher.group(4).trim();
+
+            fields.put(field, inferType(value));
+            logic.add(translateSetStatement(field, value, fields));
+        }
+
+        // Parse IF statements
+        Matcher ifMatcher = ifPattern.matcher(content);
+        while (ifMatcher.find()) {
+            String condition = ifMatcher.group(1).trim();
+            String block = ifMatcher.group(2).trim();
+            logic.add(String.format("        if (%s) {", translateCondition(condition)));
+            parseNestedBlock(block, fields, logic, 2); // Indent level 2
+            logic.add("        }");
+        }
+
+        // Parse WHILE statements
+        Matcher whileMatcher = whilePattern.matcher(content);
+        while (whileMatcher.find()) {
+            String condition = whileMatcher.group(1).trim();
+            String block = whileMatcher.group(2).trim();
+            logic.add(String.format("        while (%s) {", translateCondition(condition)));
+            parseNestedBlock(block, fields, logic, 2); // Indent level 2
+            logic.add("        }");
+        }
+    }
+
+    private void parseNestedBlock(String block, Map<String, String> fields, List<String> logic, int indentLevel) {
+        Matcher setMatcher = Pattern.compile("SET\\s+OutputRoot\\.(\\w+)\\.(\\w+)(?:\\.(\\w+))?\\s*=\\s*([^;]+);").matcher(block);
+        String indent = "        ".repeat(indentLevel);
+        while (setMatcher.find()) {
+            String field = setMatcher.group(3) != null ? setMatcher.group(3) : setMatcher.group(2);
+            String value = setMatcher.group(4).trim();
+            fields.put(field, inferType(value));
+            logic.add(indent + translateSetStatement(field, value, fields));
+        }
+    }
+
+    private String translateSetStatement(String field, String value, Map<String, String> fields) {
+        if (value.contains("InputRoot")) {
+            String inputField = value.split("\\.")[value.split("\\.").length - 1];
+            fields.put(inputField, inferType(value));
+            return String.format("output.set%s(input.get%s());", capitalize(field), capitalize(inputField));
+        } else if (value.contains("*")) {
+            String[] operands = value.split("\\s*\\*\\s*");
+            String op1 = operands[0].split("\\.")[operands[0].split("\\.").length - 1];
+            String op2 = operands[1].split("\\.")[operands[1].split("\\.").length - 1];
+            fields.put(op1, "double");
+            fields.put(op2, "int");
+            return String.format("output.set%s(input.get%s() * input.get%s());", capitalize(field), capitalize(op1), capitalize(op2));
+        } else {
+            return String.format("output.set%s(%s);", capitalize(field), value);
+        }
+    }
+
+    private String translateCondition(String condition) {
+        // Simple translation: assumes InputRoot references
+        String[] parts = condition.split("\\s+");
+        String field = parts[0].split("\\.")[parts[0].split("\\.").length - 1];
+        return String.format("input.get%s() %s %s", capitalize(field), parts[1], parts[2]);
+    }
+
+    private String inferType(String value) {
+        if (value.startsWith("'") && value.endsWith("'")) return "String";
+        if (value.contains(".")) return "double";
+        if (value.matches("\\d+")) return "int";
+        return "String"; // Default
+    }
+
+    private String mapEsqlTypeToJava(String esqlType) {
+        switch (esqlType.toUpperCase()) {
+            case "INTEGER": return "int";
+            case "FLOAT": return "double";
+            case "CHAR": return "String";
+            default: return "String";
+        }
+    }
+
+    private String capitalize(String str) {
+        return str.substring(0, 1).toUpperCase() + str.substring(1);
+    }
+
+    private void generateJavaClass(String className, Map<String, String> fields) throws IOException {
+        StringBuilder fieldDecls = new StringBuilder();
+        StringBuilder constructorParams = new StringBuilder();
+        StringBuilder constructorBody = new StringBuilder();
+        StringBuilder gettersSetters = new StringBuilder();
+
+        for (Map.Entry<String, String> entry : fields.entrySet()) {
+            String field = entry.getKey();
+            String type = entry.getValue();
+            fieldDecls.append(String.format("    private %s %s;\n", type, field));
+            if (constructorParams.length() > 0) constructorParams.append(", ");
+            constructorParams.append(String.format("%s %s", type, field));
+            constructorBody.append(String.format("        this.%s = %s;\n", field, field));
+            gettersSetters.append(String.format("    public %s get%s() { return %s; }\n", type, capitalize(field), field));
+            gettersSetters.append(String.format("    public void set%s(%s %s) { this.%s = %s; }\n", capitalize(field), type, field, field, field));
+        }
+
+        String javaClass = String.format(JAVA_CLASS_TEMPLATE, className, fieldDecls, className, className, constructorParams, constructorBody, gettersSetters);
+        writeFile(outputDir + "/" + className + ".java", javaClass);
+    }
+
+    private void generateJavaTransformer(String className, String transformerName, List<String> logic) throws IOException {
+        String javaTransformer = String.format(JAVA_TRANSFORMER_TEMPLATE, transformerName, className, className, className, className, String.join("\n", logic));
+        writeFile(outputDir + "/" + transformerName + ".java", javaTransformer);
+    }
+
+    private void writeFile(String fileName, String content) throws IOException {
+        try (FileWriter writer = new FileWriter(fileName)) {
+            writer.write(content);
+        }
+    }
+}
