@@ -1,0 +1,166 @@
+import java.util.*;
+
+public class ESQLToJavaConverter {
+
+    public static void main(String[] args) {
+        // Example ESQL input
+        String esqlCode = """
+            SET OutputRoot.JSON.Data.Rxco.rxNumber = InputRoot.JSON.Data.Presc.Prescriptionnumber;
+            SET OutputRoot.JSON.Data.programType = InputRoot.JSON.Data.pgType;
+            """;
+
+        String javaCode = convertESQLToJava(esqlCode);
+        System.out.println("Generated Java Code:\n" + javaCode);
+    }
+
+    public static String convertESQLToJava(String esqlCode) {
+        StringBuilder javaCode = new StringBuilder();
+        List<String> lines = List.of(esqlCode.split("\n"));
+
+        // Maps to store class structures for input and output
+        Map<String, ClassNode> inputClasses = new HashMap<>();
+        Map<String, ClassNode> outputClasses = new HashMap<>();
+        List<String> mappings = new ArrayList<>();
+
+        // Parse ESQL lines
+        for (String line : lines) {
+            String trimmedLine = line.trim();
+            if (trimmedLine.isEmpty() || !trimmedLine.startsWith("SET")) continue;
+
+            String[] parts = trimmedLine.replace("SET ", "").split("=");
+            String outputPath = parts[0].trim().replace("OutputRoot.JSON.Data.", "");
+            String inputPath = parts[1].trim().replace("InputRoot.JSON.Data.", "").replace(";", "");
+
+            // Build class structures directly under InputReq and OutputReq
+            buildClassStructure(outputPath, outputClasses, "OutputReq");
+            buildClassStructure(inputPath, inputClasses, "InputReq");
+
+            // Store mapping
+            mappings.add("        " + convertPathToSetter(outputPath, "outputReq") + " = " +
+                        convertPathToGetter(inputPath, "inputReq") + ";");
+        }
+
+        // Generate Java code
+        javaCode.append("import lombok.Data;\n\n");
+
+        // Generate input class (InputReq)
+        generateClassCode(inputClasses.get("InputReq"), javaCode, new HashSet<>(), "");
+
+        // Generate output class (OutputReq)
+        generateClassCode(outputClasses.get("OutputReq"), javaCode, new HashSet<>(), "");
+
+        // Generate mapping method
+        javaCode.append("public class Mapper {\n");
+        javaCode.append("    public OutputReq map(InputReq inputReq) {\n");
+        javaCode.append("        OutputReq outputReq = new OutputReq();\n");
+
+        // Handle nested object instantiation
+        Set<String> instantiated = new HashSet<>();
+        for (String mapping : mappings) {
+            String[] parts = mapping.split("=");
+            String setter = parts[0].trim();
+            String[] setterParts = setter.split("\\.");
+            for (int i = 1; i < setterParts.length - 1; i++) {
+                String objPath = String.join(".", Arrays.copyOfRange(setterParts, 1, i + 1));
+                if (!instantiated.contains(objPath)) {
+                    String className = capitalize(setterParts[i]);
+                    javaCode.append("        ").append(objPath).append(" = new ").append(className).append("();\n");
+                    instantiated.add(objPath);
+                }
+            }
+            javaCode.append(mapping).append("\n");
+        }
+
+        javaCode.append("        return outputReq;\n");
+        javaCode.append("    }\n");
+        javaCode.append("}\n");
+
+        return javaCode.toString();
+    }
+
+    // ClassNode to represent nested structure
+    static class ClassNode {
+        String name;
+        Map<String, ClassNode> fields = new HashMap<>();
+        Map<String, String> simpleFields = new HashMap<>(); // fieldName -> type
+
+        ClassNode(String name) {
+            this.name = name;
+        }
+    }
+
+    // Build class structure from ESQL path
+    private static void buildClassStructure(String path, Map<String, ClassNode> classes, String rootClass) {
+        String[] parts = path.split("\\.");
+        ClassNode current = classes.computeIfAbsent(rootClass, ClassNode::new);
+
+        if (parts.length == 1) {
+            // Simple field directly under root
+            current.simpleFields.put(parts[0], "String");
+            return;
+        }
+
+        for (int i = 0; i < parts.length - 1; i++) {
+            String fieldName = parts[i];
+            String className = capitalize(fieldName);
+            current.fields.put(fieldName, classes.computeIfAbsent(className, ClassNode::new));
+            current = current.fields.get(fieldName);
+        }
+        // Last part is a simple field
+        String fieldName = parts[parts.length - 1];
+        current.simpleFields.put(fieldName, "String"); // Assuming String type for simplicity
+    }
+
+    // Generate class code recursively
+    private static void generateClassCode(ClassNode node, StringBuilder javaCode, Set<String> generated, String indent) {
+        if (node == null || generated.contains(node.name)) return;
+        generated.add(node.name);
+
+        javaCode.append(indent).append("@Data\n");
+        javaCode.append(indent).append("public class ").append(node.name).append(" {\n");
+
+        // Generate nested classes
+        for (Map.Entry<String, ClassNode> entry : node.fields.entrySet()) {
+            String fieldName = entry.getKey();
+            String className = entry.getValue().name;
+            javaCode.append(indent).append("    private ").append(className).append(" ").append(fieldName).append(";\n");
+        }
+
+        // Generate simple fields
+        for (Map.Entry<String, String> entry : node.simpleFields.entrySet()) {
+            javaCode.append(indent).append("    private ").append(entry.getValue()).append(" ").append(entry.getKey()).append(";\n");
+        }
+
+        javaCode.append(indent).append("}\n\n");
+
+        // Recursively generate nested classes
+        for (ClassNode nested : node.fields.values()) {
+            generateClassCode(nested, javaCode, generated, indent);
+        }
+    }
+
+    // Convert ESQL path to getter
+    private static String convertPathToGetter(String path, String root) {
+        String[] parts = path.split("\\.");
+        StringBuilder getter = new StringBuilder(root);
+        for (int i = 0; i < parts.length; i++) {
+            getter.append(".get").append(capitalize(parts[i])).append("()");
+        }
+        return getter.toString();
+    }
+
+    // Convert ESQL path to setter
+    private static String convertPathToSetter(String path, String root) {
+        String[] parts = path.split("\\.");
+        StringBuilder setter = new StringBuilder(root);
+        for (int i = 0; i < parts.length; i++) {
+            setter.append(".set").append(capitalize(parts[i])).append(i == parts.length - 1 ? "" : "()");
+        }
+        return setter.toString();
+    }
+
+    // Capitalize first letter
+    private static String capitalize(String str) {
+        return str.substring(0, 1).toUpperCase() + str.substring(1);
+    }
+}
