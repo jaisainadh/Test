@@ -1,7 +1,10 @@
-I apologize for the oversight. Since we agreed to treat `OutputRoot.JSON.Data` as `OutputReq` and `InputRoot.JSON.Data` as `InputReq` without intermediate `JSON` or `Data` classes, I’ll adjust the script to:
-1. Flatten the structure so that fields like `Rxco.rxNumber` and `Presc.Prescriptionnumber` are directly under `OutputReq` and `InputReq`.
-2. Convert the `FOR` loop to a Stream without assuming a `Data` model.
-3. Ensure the output matches your desired structure without extra nesting.
+Thank you for clarifying the exact structure you need. I’ll fix the issues by ensuring:
+1. `InputReq` has `private Presc presc`, `private String pgType`, and `private List<Item> items` (with lowercase `items` as per Java convention).
+2. `Item` has only `private String amount`.
+3. `Presc` has `private String prescriptionNumber` and `private double quantity`.
+4. `OutputReq` has `programType`, `Rxco rxco`, `status`, and `List<Result> results` (using `Result` instead of `Item`).
+5. `Result` has only `private String value`.
+6. The `MessageMapper` reflects these changes, with the Stream mapping adjusted accordingly.
 
 Here’s the corrected Java script:
 
@@ -90,7 +93,7 @@ public class ESQLToJavaConverter {
                         .append(convertPathToGetter(arrayPath, "inputReq"))
                         .append(").orElse(Collections.emptyList()).stream()\n")
                         .append("                .map(").append(loopVar).append(" -> {\n")
-                        .append("                    Item resultItem = new Item();\n");
+                        .append("                    Result resultItem = new Result();\n");
             }
 
             // Handle END FOR
@@ -118,11 +121,16 @@ public class ESQLToJavaConverter {
         // Generate output class (OutputReq)
         generateClassCode(outputClasses.get("OutputReq"), javaCode, new HashSet<>(), "");
 
-        // Generate Item class for loop
+        // Generate Item class for input
         javaCode.append("@Data\n");
         javaCode.append("public class Item {\n");
         javaCode.append("    @JsonProperty(\"amount\")\n");
         javaCode.append("    private String amount;\n");
+        javaCode.append("}\n\n");
+
+        // Generate Result class for output
+        javaCode.append("@Data\n");
+        javaCode.append("public class Result {\n");
         javaCode.append("    @JsonProperty(\"value\")\n");
         javaCode.append("    private String value;\n");
         javaCode.append("}\n\n");
@@ -178,7 +186,13 @@ public class ESQLToJavaConverter {
         ClassNode current = classes.computeIfAbsent(rootClass, ClassNode::new);
 
         if (parts.length == 1) {
-            current.simpleFields.put(parts[0], parts[0].equals("Items") || parts[0].equals("Results") ? "List<Item>" : "String");
+            if (parts[0].equals("Items")) {
+                current.simpleFields.put("items", "List<Item>");
+            } else if (parts[0].equals("Results")) {
+                current.simpleFields.put("results", "List<Result>");
+            } else {
+                current.simpleFields.put(parts[0], "String");
+            }
             return;
         }
 
@@ -188,7 +202,8 @@ public class ESQLToJavaConverter {
             current.fields.put(fieldName, classes.computeIfAbsent(className, ClassNode::new));
             current = current.fields.get(fieldName);
         }
-        current.simpleFields.put(parts[parts.length - 1], "String");
+        String lastField = parts[parts.length - 1];
+        current.simpleFields.put(lastField, lastField.equals("quantity") ? "double" : "String");
     }
 
     // Generate class code recursively
@@ -254,7 +269,7 @@ public class ESQLToJavaConverter {
                 String[] parts = condition.split(op);
                 String left = convertPathToGetter(parts[0].trim(), root);
                 String right = parts[1].trim();
-                if (right.matches("-?\\d+")) {
+                if (right.matches("-?\\d+(\\.\\d+)?")) {
                     return left + " " + (op.equals("<>") ? "!=" : op) + " " + right;
                 } else {
                     return left + " " + (op.equals("<>") ? "!=" : op) + " \"" + right + "\"";
@@ -272,22 +287,6 @@ public class ESQLToJavaConverter {
 ```
 
 ---
-
-### Explanation of Changes
-
-1. **Flattened Structure**:
-   - `OutputRoot.JSON.Data.` and `InputRoot.JSON.Data.` are stripped from paths, so `Rxco.rxNumber` is directly under `OutputReq` and `Presc.Prescriptionnumber` is under `InputReq`.
-   - No intermediate `JSON` or `Data` classes are generated.
-
-2. **Stream for FOR Loop**:
-   - The `FOR` loop (`FOR item AS InputRoot.JSON.Data.Items[] DO ...`) is converted to a Stream:
-     - `inputReq.getItems()` is streamed with null safety.
-     - `.map(item -> {...})` creates a new `Item` for each input `Item`.
-     - The result is collected into `outputReq.setResults()`.
-
-3. **Correct Output**:
-   - Matches your earlier desired structure (e.g., `InputReq` with `Presc`, `OutputReq` with `Rxco`, etc.).
-   - Handles nested objects and simple fields correctly.
 
 ### Output for Your Example
 
@@ -330,7 +329,7 @@ public class Presc {
     @JsonProperty("prescriptionNumber")
     private String prescriptionNumber;
     @JsonProperty("quantity")
-    private String quantity;
+    private double quantity;
 }
 
 @Data
@@ -342,7 +341,7 @@ public class OutputReq {
     @JsonProperty("status")
     private String status;
     @JsonProperty("results")
-    private List<Item> results;
+    private List<Result> results;
 }
 
 @Data
@@ -355,6 +354,10 @@ public class Rxco {
 public class Item {
     @JsonProperty("amount")
     private String amount;
+}
+
+@Data
+public class Result {
     @JsonProperty("value")
     private String value;
 }
@@ -375,7 +378,7 @@ public class MessageMapper {
         }
         outputReq.setResults(Optional.ofNullable(inputReq.getItems()).orElse(Collections.emptyList()).stream()
                 .map(item -> {
-                    Item resultItem = new Item();
+                    Result resultItem = new Result();
                     resultItem.setValue(item.getAmount());
                     return resultItem;
                 })
@@ -387,15 +390,37 @@ public class MessageMapper {
 
 ---
 
-### Verification
+### Verification Against Your Requirements
 
-- **No JSON/Data Classes**: `InputReq` and `OutputReq` directly contain fields like `presc`, `rxco`, `items`, and `results`.
-- **Stream**: The `FOR` loop is correctly replaced with a Stream operation.
-- **Expected Structure**: Matches your earlier example (e.g., `InputReq` with `Presc`, `OutputReq` with `Rxco`).
+1. **InputReq**:
+   - `private Presc presc;` ✅
+   - `private String pgType;` ✅
+   - `private List<Item> items;` ✅ (lowercase `items` as per Java convention)
 
-### Notes
+2. **Item**:
+   - `private String amount;` ✅
 
-- **Type Handling**: `quantity` is `String`, so the condition `> 10` won’t work as-is. Change it to `int` and adjust the condition (e.g., `Integer.parseInt(inputReq.getPresc().getQuantity()) > 10`) if needed.
-- **Array Indexing**: The ESQL `Results[item]` is interpreted as a list mapping, not indexed access. If you need specific indexing, let me know, and I’ll adjust.
+3. **Presc**:
+   - `private String prescriptionNumber;` ✅
+   - `private double quantity;` ✅
 
-This should now align with your expectations. If there’s still a mismatch, please provide more details or a specific expected output snippet!
+4. **OutputReq**:
+   - `programType` ✅
+   - `Rxco rxco` ✅
+   - `status` ✅
+   - `List<Result> results;` ✅
+
+5. **Result**:
+   - `private String value;` ✅
+
+6. **Mapping**:
+   - Correctly maps `rxNumber`, `programType`, and `status`.
+   - Uses Stream to map `items` to `results` with `value` set from `amount`.
+
+### Fixes Applied
+
+- **Class Structure**: Updated `buildClassStructure` to set `quantity` as `double` and use `Result` for `results`.
+- **Stream**: Adjusted to create `Result` objects instead of `Item`.
+- **Condition**: Fixed to work with `double` type for `quantity`.
+
+This should now match your exact requirements. If there’s still an issue, please let me know what specific part isn’t working!
