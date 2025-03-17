@@ -1,0 +1,113 @@
+CREATE COMPUTE MODULE POST_DIMToBackEnd
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		DECLARE rInHttp REFERENCE TO InputRoot.HTTPInputHeader;
+		
+		CREATE FIELD Environment.Variables;
+		DECLARE rEnv REFERENCE TO Environment.Variables;
+		DECLARE CvsConsumerCorrelId CHARACTER rInHttp."X-Cvsconsumercorrelationid"; 
+		
+		SET rEnv.InputRequest=InputRoot.JSON.Data;
+		
+		SET rEnv.Testharness=rInHttp.Testharness;
+		
+		
+
+		CREATE LASTCHILD OF Environment.Variables.HTTPRequestHeader DOMAIN 'BLOB' NAME 'HTTPRequestIdentifier';
+		SET rEnv.HTTPRequestHeader.HTTPRequestIdentifier = CAST(InputLocalEnvironment.Destination.HTTP.RequestIdentifier AS CHARACTER);
+		SET rEnv.clientTraceLevel = COALESCE(rInHttp.Clienttracelevel,'0');
+		SET rEnv.Eieheadertransactionid = CvsConsumerCorrelId;
+		SET rEnv.eiecorrelationid=rInHttp."X-Eiecorrelationid";
+		SET rEnv.globaltransactionid=rInHttp."X-Global-Transaction-Id";
+		
+		DECLARE transId  CHARACTER SUBSTRING(SUBSTRING(CAST(InputLocalEnvironment.Destination.HTTP.RequestIdentifier AS CHARACTER) AFTER 'X''')BEFORE '''');
+
+		
+		IF (rInHttp.Appmsgid='' OR rInHttp.Appmsgid IS NULL) OR (rInHttp.Appname='' OR rInHttp.Appname IS NULL) OR  (rInHttp.Channel='' OR rInHttp.Channel IS NULL) OR (InputRoot.JSON.Data.requestType='' OR InputRoot.JSON.Data.requestType IS NULL) OR NOT EXISTS(InputRoot.JSON.Data.prescriptionInfos[]) THEN		
+			CREATE LASTCHILD OF OutputRoot DOMAIN('JSON') NAME 'JSON';
+			CREATE FIELD OutputRoot.JSON.Data;
+			DECLARE rOutMsgTree REFERENCE TO OutputRoot.JSON.Data;
+			SET OutputRoot.HTTPReplyHeader."Content-Type" = 'application/json';
+			SET OutputRoot.HTTPReplyHeader."x-CVSConsumerCorrelationId" = rEnv.Eieheadertransactionid;
+			SET rOutMsgTree.httpCode ='400';
+			SET rOutMsgTree.httpMessage ='Data Related Error';
+			IF (rInHttp.Appmsgid='' OR rInHttp.Appmsgid IS NULL) THEN
+				SET rOutMsgTree.moreInformation = '[DataValidationError][Invalid Request : The required property Appmsgid is missing in header.][TransactionID:'||COALESCE(transId, '')||']';
+			ELSEIF (rInHttp.Appname='' OR rInHttp.Appname IS NULL) THEN
+				SET OutputRoot.JSON.Data.moreInformation = '[DataValidationError][Invalid Request : The required property Appname is missing in the header.][TransactionID:'||COALESCE(rEnv.Eieheadertransactionid,transId,'')||']';
+			ELSEIF (InputRoot.JSON.Data.requestType='' OR InputRoot.JSON.Data.requestType IS NULL ) THEN
+				SET OutputRoot.JSON.Data.moreInformation = '[DataValidationError][Invalid Request : The required property requestType is missing in the request.][TransactionID:'||COALESCE(rEnv.Eieheadertransactionid,transId,'')||']';
+			ELSEIF (rInHttp.Channel='' OR rInHttp.Channel IS NULL) THEN
+				SET OutputRoot.JSON.Data.moreInformation = '[DataValidationError][Invalid Request : The required property Channel is missing in the header.][TransactionID:'||COALESCE(rEnv.Eieheadertransactionid,transId,'')||']';
+			ELSEIF NOT EXISTS(InputRoot.JSON.Data.prescriptionInfos[]) THEN
+				SET OutputRoot.JSON.Data.moreInformation = '[DataValidationError][Invalid Request : The required field array prescriptionInfos is missing in the request.][TransactionID:'||COALESCE(rEnv.Eieheadertransactionid,transId,'')||']';
+			END IF;		
+				
+			SET OutputLocalEnvironment.Destination.HTTP.ReplyStatusCode = '400';
+			PROPAGATE TO TERMINAL 'out1';
+			RETURN FALSE;
+		END IF;
+		
+		FOR inprescref AS InputRoot.JSON.Data.prescriptionInfos.Item[] DO
+			IF (inprescref.rxNumber ='' OR inprescref.rxNumber IS NULL) OR ((inprescref.scheduleDate ='' OR inprescref.scheduleDate IS NULL) AND (inprescref.operation IN('Schedule','Reschedule')) ) OR  (inprescref.storeNumber='' OR inprescref.storeNumber IS NULL) OR  (inprescref.operation='' OR inprescref.operation IS NULL) THEN
+				CREATE LASTCHILD OF OutputRoot DOMAIN('JSON') NAME 'JSON';
+				CREATE FIELD OutputRoot.JSON.Data;
+				DECLARE rOutMsgTree REFERENCE TO OutputRoot.JSON.Data;
+				SET OutputRoot.HTTPReplyHeader."Content-Type" = 'application/json';
+				SET OutputRoot.HTTPReplyHeader."x-CVSConsumerCorrelationId" = rEnv.Eieheadertransactionid;
+				SET rOutMsgTree.httpCode ='400';
+				SET rOutMsgTree.httpMessage ='Data Related Error';
+				IF (inprescref.rxNumber ='' OR inprescref.rxNumber IS NULL) THEN
+					SET OutputRoot.JSON.Data.moreInformation = '[DataValidationError][Invalid Request : The required field rxNumber under array prescriptionInfos is missing in the request.][TransactionID:'||COALESCE(rEnv.Eieheadertransactionid,transId,'')||']';
+				ELSEIF (inprescref.scheduleDate ='' OR inprescref.scheduleDate IS NULL) AND (inprescref.operation IN('Schedule','Reschedule')) THEN
+					SET OutputRoot.JSON.Data.moreInformation = '[DataValidationError][Invalid Request : The required field scheduleDate under array prescriptionInfos is missing in the request.][TransactionID:'||COALESCE(rEnv.Eieheadertransactionid,transId,'')||']';	
+				ELSEIF (inprescref.storeNumber ='' OR inprescref.storeNumber IS NULL) THEN
+					SET OutputRoot.JSON.Data.moreInformation = '[DataValidationError][Invalid Request : The required field storeNumber under array prescriptionInfos is missing in the request.][TransactionID:'||COALESCE(rEnv.Eieheadertransactionid,transId,'')||']';
+				ELSEIF (inprescref.operation='' OR inprescref.operation IS NULL)  THEN
+					SET OutputRoot.JSON.Data.moreInformation = '[DataValidationError][Invalid Request : The required field operation under array prescriptionInfos is missing in the request.][TransactionID:'||COALESCE(rEnv.Eieheadertransactionid,transId,'')||']';
+				END IF;
+				SET OutputLocalEnvironment.Destination.HTTP.ReplyStatusCode = '400';
+				PROPAGATE TO TERMINAL 'out1';
+				RETURN FALSE;
+			END IF;
+		END FOR;
+		
+		-- Build the request header
+		SET OutputRoot.HTTPRequestHeader."Content-Type" = 'application/json';
+		SET OutputRoot.HTTPRequestHeader.appMsgId=rInHttp.Appmsgid;
+		SET OutputRoot.HTTPRequestHeader.channel=rInHttp.Channel;
+		SET OutputRoot.HTTPRequestHeader.appName=rInHttp.Appname;
+		SET OutputRoot.HTTPRequestHeader.facilityID=rInHttp.Facilityid;
+		
+		-- Build service request
+		CREATE LASTCHILD OF OutputRoot DOMAIN('JSON') NAME 'JSON';
+		CREATE FIELD OutputRoot.JSON.Data;
+		DECLARE rOutMsgTree REFERENCE TO OutputRoot.JSON.Data;
+		
+		SET rOutMsgTree.requestType=InputRoot.JSON.Data.requestType;
+	
+		CREATE FIELD rOutMsgTree.prescriptionInfos IDENTITY(JSON.Array)prescriptionInfos;
+		
+		DECLARE I INTEGER 1;
+		FOR inprescref AS InputRoot.JSON.Data.prescriptionInfos.Item[] DO
+			SET rOutMsgTree.prescriptionInfos.Item[I].rxNumber=inprescref.rxNumber;
+			SET rOutMsgTree.prescriptionInfos.Item[I].scheduleDate=inprescref.scheduleDate;
+			SET rOutMsgTree.prescriptionInfos.Item[I].storeNumber=inprescref.storeNumber;
+			SET rOutMsgTree.prescriptionInfos.Item[I].operation=inprescref.operation;
+			SET rOutMsgTree.prescriptionInfos.Item[I].programType=inprescref.programType;
+			SET I=I+1;
+		END FOR;
+			
+
+		
+		-- Set the endpoint URL
+		IF rInHttp.Testharness = 'P' AND testHarnessUrl IS NOT NULL AND testHarnessUrl <> '' THEN
+			SET OutputLocalEnvironment.Destination.HTTP.RequestURL = testHarnessUrl;
+		ELSE
+			SET OutputLocalEnvironment.Destination.HTTP.RequestURL = BackendURL;
+		END IF;
+		PROPAGATE TO TERMINAL 'out';
+		RETURN FALSE; 	
+	END;
+	
+END MODULE;
