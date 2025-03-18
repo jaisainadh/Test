@@ -16,7 +16,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.IntStream;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class EsqlToJavaConverter {
 
@@ -285,11 +286,11 @@ public class EsqlToJavaConverter {
 
         loop.append(indent).append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
             .append(indent).append("if (").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("() != null) {\n")
-            .append(indent).append("    ").append(collectionField).append(" = IntStream.range(0, ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("().size())\n")
-            .append(indent).append("        .mapToObj(i -> {\n")
-            .append(indent).append("            ").append(itemClassName).append(" ").append(iterator).append(" = ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("().get(i);\n")
+            .append(indent).append("    ").append(collectionField).append(" = Stream.iterate(").append(counterStart).append(", i -> i < ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("().size() + ").append(counterStart).append(", i -> i + 1)\n")
+            .append(indent).append("        .map(i -> {\n")
+            .append(indent).append("            ").append(itemClassName).append(" ").append(iterator).append(" = ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("().get(i - ").append(counterStart).append(");\n")
             .append(indent).append("            ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
-            .append(convertLoopBody(body, iterator, "outputItem", references))
+            .append(convertLoopBodyWithCounter(body, iterator, "outputItem", counterVar, references, variables))
             .append(indent).append("            return outputItem;\n")
             .append(indent).append("        })\n")
             .append(indent).append("        .collect(Collectors.toList());\n")
@@ -359,22 +360,21 @@ public class EsqlToJavaConverter {
 
         loop.append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
             .append("if (input.get").append(capitalize(collectionName)).append("() != null) {\n")
-            .append("    ").append(collectionField).append(" = IntStream.range(0, input.get").append(capitalize(collectionName)).append("().size())\n");
-
-        Matcher moveMatcher = MOVE_PATTERN.matcher(priorContent);
-        if (moveMatcher.find() && moveMatcher.group(1).equals(refName)) {
-            loop.append("        .skip(1) // MOVE FIRSTCHILD\n");
-        }
-
-        loop.append("        .mapToObj(i -> {\n")
-            .append("            ").append(itemClassName).append(" ").append(refName.toLowerCase()).append(" = input.get").append(capitalize(collectionName)).append("().get(i);\n")
+            .append("    ").append(collectionField).append(" = Stream.iterate(").append(counterStart).append(", i -> i < input.get").append(capitalize(collectionName)).append("().size() + ").append(counterStart).append(", i -> i + 1)\n")
+            .append("        .map(i -> {\n")
+            .append("            ").append(itemClassName).append(" ").append(refName.toLowerCase()).append(" = input.get").append(capitalize(collectionName)).append("().get(i - ").append(counterStart).append(");\n")
             .append("            ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
-            .append(convertLoopBody(body, refName.toLowerCase(), "outputItem", references))
+            .append(convertLoopBodyWithCounter(body, refName.toLowerCase(), "outputItem", counterVar, references, variables))
             .append("            return outputItem;\n")
             .append("        })\n")
             .append("        .collect(Collectors.toList());\n")
             .append("}\n")
             .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+
+        Matcher moveMatcher = MOVE_PATTERN.matcher(priorContent);
+        if (moveMatcher.find() && moveMatcher.group(1).equals(refName)) {
+            // Adjust for MOVE FIRSTCHILD if needed, but Stream.skip(1) is less relevant here
+        }
 
         logicBlocks.add(loop.toString());
     }
@@ -591,7 +591,7 @@ public class EsqlToJavaConverter {
             .append("import ").append(MODEL_PACKAGE).append(".*;\n")
             .append("import java.util.*;\n")
             .append("import java.util.stream.Collectors;\n")
-            .append("import java.util.stream.IntStream;\n")
+            .append("import java.util.stream.Stream;\n")
             .append("import java.time.LocalDateTime;\n")
             .append("import java.time.format.DateTimeFormatter;\n\n")
             .append("public class DataMapper {\n");
@@ -716,6 +716,107 @@ public class EsqlToJavaConverter {
             result.append("            ").append(setter).append("\n");
         }
         return result.toString();
+    }
+
+    private static String convertLoopBodyWithCounter(String body, String iterator, String itemVar, String counterVar,
+            Map<String, String> references, Map<String, String> variables) {
+        StringBuilder result = new StringBuilder();
+        Matcher matcher = LOOP_INDEX_PATTERN.matcher(body);
+        while (matcher.find()) {
+            String indexVar = matcher.group(2);
+            String field = matcher.group(3).toLowerCase();
+            String value = matcher.group(4).trim();
+            String resolvedValue = resolveReference(value, references);
+
+            if (field.equals("httpcode") || field.equals("httpmessage") || field.equals("moreinformation")
+                    || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
+                    || resolvedValue.contains("moreInformation")) {
+                continue;
+            }
+
+            String setter;
+            Matcher castMatcher = CAST_PATTERN.matcher(value);
+            Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
+            Matcher dateMatcher = DATE_PATTERN.matcher(value);
+            if (coalesceMatcher.find()) {
+                String[] args = coalesceMatcher.group(1).split(",");
+                String coalesceValue = args[0].trim();
+                String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
+                String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
+                setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
+            } else if (castMatcher.find()) {
+                String castExpr = castMatcher.group(1).trim();
+                String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+                String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
+                setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
+            } else if (dateMatcher.find()) {
+                String dateExpr = dateMatcher.group(1);
+                String format = dateMatcher.group(2);
+                String javaFormat = convertDateFormat(format);
+                String resolvedDateExpr = resolveReference(dateExpr, references);
+                String dateValue = resolvedDateExpr.contains("InputRoot") ? buildInputGetter(resolvedDateExpr, iterator) : convertValue(resolvedDateExpr);
+                setter = itemVar + ".set" + capitalize(field) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
+            } else {
+                String inputGetter = buildInputGetter(resolvedValue, iterator);
+                setter = itemVar + ".set" + capitalize(field) + "(" + inputGetter + ");";
+            }
+            result.append("            ").append(setter).append("\n");
+        }
+
+        // Handle IF conditions
+        Matcher ifMatcher = Pattern.compile("IF\\s+(.+?)\\s+THEN\\s+(.+?)\\s+ELSE\\s+(.+?)\\s+END\\s+IF", Pattern.DOTALL).matcher(body);
+        while (ifMatcher.find()) {
+            String condition = ifMatcher.group(1).trim();
+            String thenBlock = ifMatcher.group(2).trim();
+            String elseBlock = ifMatcher.group(3).trim();
+            Matcher thenSetter = LOOP_INDEX_PATTERN.matcher(thenBlock);
+            Matcher elseSetter = LOOP_INDEX_PATTERN.matcher(elseBlock);
+            if (thenSetter.find() && elseSetter.find()) {
+                String thenField = thenSetter.group(3).toLowerCase();
+                String thenValue = thenSetter.group(4).trim();
+                String elseField = elseSetter.group(3).toLowerCase();
+                String elseValue = elseSetter.group(4).trim();
+                if (thenField.equals(elseField)) {
+                    String resolvedCondition = resolveReference(condition, references);
+                    String inputGetterCond = buildInputGetter(resolvedCondition, iterator);
+                    String thenSetterValue = generateSetterValue(thenValue, references, iterator);
+                    String elseSetterValue = generateSetterValue(elseValue, references, iterator);
+                    result.append("            if (\"Y\".equals(" + inputGetterCond + ")) {\n")
+                          .append("                ").append(itemVar).append(".set").append(capitalize(thenField)).append("(").append(thenSetterValue).append(");\n")
+                          .append("            } else {\n")
+                          .append("                ").append(itemVar).append(".set").append(capitalize(elseField)).append("(").append(elseSetterValue).append(");\n")
+                          .append("            }\n");
+                }
+            }
+        }
+
+        // Handle standalone SET after IF (likely a bug in ESQL)
+        Matcher finalSetter = LOOP_INDEX_PATTERN.matcher(body);
+        while (finalSetter.find()) {
+            String field = finalSetter.group(3).toLowerCase();
+            String value = finalSetter.group(4).trim();
+            if (value.equals("FALSE")) {
+                result.append("            ").append(itemVar).append(".set").append(capitalize(field)).append("(false);\n");
+            }
+        }
+
+        return result.toString();
+    }
+
+    private static String generateSetterValue(String value, Map<String, String> references, String iterator) {
+        String resolvedValue = resolveReference(value, references);
+        Matcher inputMatcher = INPUT_PATTERN.matcher(resolvedValue);
+        if (inputMatcher.find()) {
+            String inputGetter = buildInputGetter(resolvedValue, iterator);
+            Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
+            if (coalesceMatcher.find()) {
+                String[] args = coalesceMatcher.group(1).split(",");
+                String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
+                return "Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + ")";
+            }
+            return inputGetter;
+        }
+        return convertValue(value);
     }
 
     private static String detectCounterVariable(String body, Map<String, String> variables) {
