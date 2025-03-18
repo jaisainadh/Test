@@ -16,884 +16,752 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 public class EsqlToJavaConverter {
 
-	private static final String OUTPUT_DIR = "generated/";
-	private static final String MODEL_PACKAGE = "com.example.model";
-	private static final String MAPPER_PACKAGE = "com.example.mapper";
+    private static final String OUTPUT_DIR = "generated/";
+    private static final String MODEL_PACKAGE = "com.example.model";
+    private static final String MAPPER_PACKAGE = "com.example.mapper";
 
-	private static final Map<String, String> TYPE_MAPPING = new HashMap<>();
-	static {
-		TYPE_MAPPING.put("INTEGER", "Integer");
-		TYPE_MAPPING.put("FLOAT", "Float");
-		TYPE_MAPPING.put("DECIMAL", "Double");
-		TYPE_MAPPING.put("CHARACTER", "String");
-		TYPE_MAPPING.put("BOOLEAN", "Boolean");
-	}
+    private static final Map<String, String> TYPE_MAPPING = new HashMap<>();
+    static {
+        TYPE_MAPPING.put("INTEGER", "Integer");
+        TYPE_MAPPING.put("FLOAT", "Float");
+        TYPE_MAPPING.put("DECIMAL", "Double");
+        TYPE_MAPPING.put("CHARACTER", "String");
+        TYPE_MAPPING.put("BOOLEAN", "Boolean");
+    }
 
-	private static final Pattern PROCEDURE_PATTERN = Pattern
-			.compile("CREATE\\s+PROCEDURE\\s+(\\w+)\\s*\\(\\s*\\)\\s*BEGIN\\s+(.+?)\\s+END\\s*;", Pattern.DOTALL);
-	private static final Pattern ASSIGNMENT_PATTERN = Pattern.compile("SET\\s+([^=]+)\\s*=\\s*([^;]+);",
-			Pattern.DOTALL);
-	private static final Pattern INPUT_PATTERN = Pattern.compile(
-			"(InputRoot\\.(?:JSON\\.Data|XML|XMLNSC|MRM)(?:\\.\\*:?\\w+)*(?:\\.Item\\[.*?\\])?)\\.([\\w*:]+)",
-			Pattern.DOTALL
-	);
-	private static final Pattern HEADER_PATTERN = Pattern.compile("([^\\.]+)\\.\"([^\"]+)\"", Pattern.DOTALL);
-	private static final Pattern CAST_PATTERN = Pattern.compile("CAST\\(([^)]+)\\s+AS\\s+(\\w+)\\)", Pattern.DOTALL);
-	private static final Pattern COALESCE_PATTERN = Pattern.compile("COALESCE\\(([^,]+(?:,[^,]+)*)\\)", Pattern.DOTALL);
-	private static final Pattern FOR_PATTERN = Pattern
-			.compile("FOR\\s+(\\w+)\\s+AS\\s+([^)]+)\\s+DO\\s+(.+?)\\s+END FOR", Pattern.DOTALL);
-	private static final Pattern WHILE_PATTERN = Pattern
-			.compile("WHILE\\s+LASTMOVE\\s*\\((\\w+)\\)\\s+DO\\s+(.+?)\\s+END WHILE", Pattern.DOTALL);
-	private static final Pattern REFERENCE_PATTERN = Pattern.compile("DECLARE\\s+(\\w+)\\s+REFERENCE\\s+TO\\s+([^;]+);",
-			Pattern.DOTALL);
-	private static final Pattern SUBSTRING_PATTERN = Pattern
-			.compile("SUBSTRING\\(([^)]+)\\s+(AFTER|BEFORE)\\s*'([^']*)'\\)", Pattern.DOTALL);
-	private static final Pattern MOVE_PATTERN = Pattern.compile("MOVE\\s+(\\w+)\\s+FIRSTCHILD\\s*;", Pattern.DOTALL);
-	private static final Pattern DATE_PATTERN = Pattern.compile(
-			"DATE_FORMAT\\(([^,]+),\\s*'([^']+)'\\)",
-			Pattern.DOTALL
-	);
-	private static final Pattern NESTED_LOOP_PATTERN = Pattern.compile(
-			"FOR\\s+(\\w+)\\s+AS\\s+([^)]+)\\s+DO\\s+(?:FOR\\s+(\\w+)\\s+AS\\s+([^)]+)\\s+DO\\s+(.+?)\\s+END\\s+FOR\\s+)?(.+?)\\s+END\\s+FOR",
-			Pattern.DOTALL
-	);
+    private static final Pattern PROCEDURE_PATTERN = Pattern.compile("CREATE\\s+PROCEDURE\\s+(\\w+)\\s*\\(\\s*\\)\\s*BEGIN\\s+(.+?)\\s+END\\s*;", Pattern.DOTALL);
+    private static final Pattern ASSIGNMENT_PATTERN = Pattern.compile("SET\\s+([^=]+)\\s*=\\s*([^;]+);", Pattern.DOTALL);
+    private static final Pattern INPUT_PATTERN = Pattern.compile("(InputRoot\\.(?:JSON\\.Data|XML|XMLNSC|MRM)(?:\\.\\*:?\\w+)*(?:\\.Item\\[.*?\\])?)\\.([\\w*:]+)", Pattern.DOTALL);
+    private static final Pattern HEADER_PATTERN = Pattern.compile("([^\\.]+)\\.\"([^\"]+)\"", Pattern.DOTALL);
+    private static final Pattern CAST_PATTERN = Pattern.compile("CAST\\(([^)]+)\\s+AS\\s+(\\w+)\\)", Pattern.DOTALL);
+    private static final Pattern COALESCE_PATTERN = Pattern.compile("COALESCE\\(([^,]+(?:,[^,]+)*)\\)", Pattern.DOTALL);
+    private static final Pattern FOR_PATTERN = Pattern.compile("FOR\\s+(\\w+)\\s+AS\\s+([^)]+)\\s+DO\\s+(.+?)\\s+END FOR", Pattern.DOTALL);
+    private static final Pattern WHILE_PATTERN = Pattern.compile("WHILE\\s+LASTMOVE\\s*\\((\\w+)\\)\\s+DO\\s+(.+?)\\s+END WHILE", Pattern.DOTALL);
+    private static final Pattern REFERENCE_PATTERN = Pattern.compile("DECLARE\\s+(\\w+)\\s+REFERENCE\\s+TO\\s+([^;]+);", Pattern.DOTALL);
+    private static final Pattern DECLARE_PATTERN = Pattern.compile("DECLARE\\s+(\\w+)\\s+(INTEGER|FLOAT|DECIMAL|CHARACTER|BOOLEAN)(?:\\s+(\\d+|'.*?'))?;", Pattern.DOTALL);
+    private static final Pattern SUBSTRING_PATTERN = Pattern.compile("SUBSTRING\\(([^)]+)\\s+(AFTER|BEFORE)\\s*'([^']*)'\\)", Pattern.DOTALL);
+    private static final Pattern MOVE_PATTERN = Pattern.compile("MOVE\\s+(\\w+)\\s+FIRSTCHILD\\s*;", Pattern.DOTALL);
+    private static final Pattern DATE_PATTERN = Pattern.compile("DATE_FORMAT\\(([^,]+),\\s*'([^']+)'\\)", Pattern.DOTALL);
+    private static final Pattern CREATE_LASTCHILD_PATTERN = Pattern.compile("CREATE\\s+LASTCHILD\\s+OF\\s+([^\\s]+)\\s+NAME\\s+(\\w+);", Pattern.DOTALL);
+    private static final Pattern CREATE_FIELD_PATTERN = Pattern.compile("CREATE\\s+FIELD\\s+([^\\s]+)\\.(\\w+)\\s+TYPE\\s+NAME\\s+(\\w+);", Pattern.DOTALL);
+    private static final Pattern LOOP_INDEX_PATTERN = Pattern.compile("SET\\s+([^=]+)\\.Item\\[(\\w+)\\]\\.(\\w+)\\s*=\\s*([^;]+);", Pattern.DOTALL);
 
-	public static void main(String[] args) {
-		String esqlFilePath = args.length > 0 ? args[0] : "input.esql";
-		try {
-			String esqlScript = readEsqlFromFile(esqlFilePath);
-			new File(OUTPUT_DIR).mkdirs();
-			Map<String, Object> parseResult = parseEsqlScript(esqlScript);
-			generateModelClasses(parseResult);
-			generateMapperClass(parseResult);
-			System.out.println("Conversion completed successfully. Files generated in " + OUTPUT_DIR);
-		} catch (Exception e) {
-			System.err.println("Error during conversion: " + e.getMessage());
-			e.printStackTrace();
-		}
-	}
+    public static void main(String[] args) {
+        String esqlFilePath = args.length > 0 ? args[0] : "input.esql";
+        try {
+            String esqlScript = readEsqlFromFile(esqlFilePath);
+            new File(OUTPUT_DIR).mkdirs();
+            Map<String, Object> parseResult = parseEsqlScript(esqlScript);
+            generateModelClasses(parseResult);
+            generateMapperClass(parseResult);
+            System.out.println("Conversion completed successfully. Files generated in " + OUTPUT_DIR);
+        } catch (Exception e) {
+            System.err.println("Error during conversion: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
 
-	private static String readEsqlFromFile(String filePath) throws IOException {
-		StringBuilder content = new StringBuilder();
-		try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
-			String line;
-			while ((line = reader.readLine()) != null) {
-				content.append(line).append("\n");
-			}
-		}
-		return content.toString();
-	}
+    private static String readEsqlFromFile(String filePath) throws IOException {
+        StringBuilder content = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                content.append(line).append("\n");
+            }
+        }
+        return content.toString();
+    }
 
-	private static Map<String, Object> parseEsqlScript(String esqlScript) {
+    private static Map<String, Object> parseEsqlScript(String esqlScript) {
         Map<String, Object> result = new HashMap<>();
         Map<String, ClassStructure> classes = new HashMap<>();
         List<String> logicBlocks = new ArrayList<>();
-		Map<String, List<String>> procedureBlocks = new HashMap<>();
+        Map<String, List<String>> procedureBlocks = new HashMap<>();
         Map<String, String> references = new HashMap<>();
-		Set<String> headerKeys = new HashSet<>();
+        Map<String, String> variables = new HashMap<>();
+        Set<String> headerKeys = new HashSet<>();
 
         ClassStructure inputClass = classes.computeIfAbsent("Input", ClassStructure::new);
         ClassStructure outputClass = classes.computeIfAbsent("Output", ClassStructure::new);
+
+        Matcher declareMatcher = DECLARE_PATTERN.matcher(esqlScript);
+        while (declareMatcher.find()) {
+            String varName = declareMatcher.group(1);
+            String varType = TYPE_MAPPING.getOrDefault(declareMatcher.group(2).toUpperCase(), "String");
+            String varValue = declareMatcher.group(3) != null ? declareMatcher.group(3).replaceAll("'", "\"") : "null";
+            variables.put(varName, varType + ":" + varValue);
+        }
 
         Matcher referenceMatcher = REFERENCE_PATTERN.matcher(esqlScript);
         while (referenceMatcher.find()) {
             references.put(referenceMatcher.group(1).trim(), referenceMatcher.group(2).trim());
         }
 
-		Matcher procedureMatcher = PROCEDURE_PATTERN.matcher(esqlScript);
-		while (procedureMatcher.find()) {
-			String procedureName = procedureMatcher.group(1);
-			String body = procedureMatcher.group(2);
-			List<String> procLogic = new ArrayList<>();
-			parseProcedureBody(body, procLogic, classes, inputClass, outputClass, references, headerKeys);
-			procedureBlocks.put(procedureName, procLogic);
-		}
+        Matcher procedureMatcher = PROCEDURE_PATTERN.matcher(esqlScript);
+        while (procedureMatcher.find()) {
+            String procedureName = procedureMatcher.group(1);
+            String body = procedureMatcher.group(2);
+            List<String> procLogic = new ArrayList<>();
+            parseProcedureBody(body, procLogic, classes, inputClass, outputClass, references, headerKeys, variables);
+            procedureBlocks.put(procedureName, procLogic);
+        }
 
         Matcher assignmentMatcher = ASSIGNMENT_PATTERN.matcher(esqlScript);
         while (assignmentMatcher.find()) {
-			if (!isWithinProcedure(assignmentMatcher.start(), procedureMatcher)) {
-				processAssignment(assignmentMatcher.group(1).trim(), assignmentMatcher.group(2).trim(), logicBlocks,
-						classes, inputClass, outputClass, references, headerKeys);
-			}
-		}
-
-		Matcher forMatcher = FOR_PATTERN.matcher(esqlScript);
-		while (forMatcher.find()) {
-			if (!isWithinProcedure(forMatcher.start(), procedureMatcher)) {
-				processForLoop(forMatcher.group(1), forMatcher.group(2), forMatcher.group(3), logicBlocks, classes,
-						inputClass, outputClass, references);
-			}
-		}
-
-		Matcher whileMatcher = WHILE_PATTERN.matcher(esqlScript);
-		while (whileMatcher.find()) {
-			if (!isWithinProcedure(whileMatcher.start(), procedureMatcher)) {
-				processWhileLoop(whileMatcher.group(1), whileMatcher.group(2),
-						esqlScript.substring(0, whileMatcher.start()), logicBlocks, classes, inputClass, outputClass,
-						references);
-			}
-		}
-
-		result.put("classes", classes);
-		result.put("logicBlocks", logicBlocks);
-		result.put("procedureBlocks", procedureBlocks);
-		result.put("headerKeys", headerKeys);
-		return result;
-	}
-
-	private static void parseProcedureBody(String body, List<String> procLogic, Map<String, ClassStructure> classes,
-			ClassStructure inputClass, ClassStructure outputClass, Map<String, String> references,
-			Set<String> headerKeys) {
-		Matcher assignmentMatcher = ASSIGNMENT_PATTERN.matcher(body);
-		while (assignmentMatcher.find()) {
-			processAssignment(assignmentMatcher.group(1).trim(), assignmentMatcher.group(2).trim(), procLogic, classes,
-					inputClass, outputClass, references, headerKeys);
-		}
-
-		Matcher forMatcher = FOR_PATTERN.matcher(body);
-		while (forMatcher.find()) {
-			processForLoop(forMatcher.group(1), forMatcher.group(2), forMatcher.group(3), procLogic, classes,
-					inputClass, outputClass, references);
-		}
-
-		Matcher whileMatcher = WHILE_PATTERN.matcher(body);
-		while (whileMatcher.find()) {
-			processWhileLoop(whileMatcher.group(1), whileMatcher.group(2), body.substring(0, whileMatcher.start()),
-					procLogic, classes, inputClass, outputClass, references);
-		}
-	}
-
-	private static void processAssignment(String outputPath, String value, List<String> logicBlocks,
-			Map<String, ClassStructure> classes, ClassStructure inputClass, ClassStructure outputClass,
-			Map<String, String> references, Set<String> headerKeys) {
-		String resolvedOutputPath = resolveReference(outputPath, references);
-		String resolvedValue = resolveReference(value, references);
-
-		if (!resolvedOutputPath.startsWith("OutputRoot.JSON.Data") || resolvedOutputPath.contains("httpCode")
-				|| resolvedOutputPath.contains("httpMessage") || resolvedOutputPath.contains("moreInformation")
-				|| resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
-				|| resolvedValue.contains("moreInformation") || resolvedOutputPath.contains(".Item[")) {
-			return;
-		}
-
-		String fullOutputPath = resolvedOutputPath;
-		String castType = null;
-		String coalesceValue = null;
-		String defaultValue = null;
-
-		Matcher castMatcher = CAST_PATTERN.matcher(value);
-		if (castMatcher.find()) {
-			value = castMatcher.group(1).trim();
-			castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
-		}
-
-		Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
-		if (coalesceMatcher.find()) {
-			String[] args = coalesceMatcher.group(1).split(",");
-			coalesceValue = args[0].trim();
-			defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
-			value = coalesceValue;
-		}
-
-		processPath(fullOutputPath, classes, outputClass, true, castType != null ? castType : value);
-
-		Matcher inputMatcher = INPUT_PATTERN.matcher(value);
-		while (inputMatcher.find()) {
-			String inputPath = inputMatcher.group(1);
-			String fieldName = inputMatcher.group(2).replace("*:", "");
-			processPath(inputPath, classes, inputClass, false, null);
-		}
-
-		Matcher headerMatcher = HEADER_PATTERN.matcher(value);
-		if (headerMatcher.find() && references.containsKey(headerMatcher.group(1))) {
-			String refPath = references.get(headerMatcher.group(1));
-			if (refPath.contains("HTTPRequestHeader")) {
-				String headerKey = headerMatcher.group(2).toLowerCase();
-				headerKeys.add(headerKey);
-			}
-		}
-
-		String[] outputParts = resolvedOutputPath.split("\\.");
-		String outputField = outputParts[outputParts.length - 1].toLowerCase();
-		String setter = generateSetter(outputField, value, references, castType, coalesceValue, defaultValue,
-				headerMatcher);
-		logicBlocks.add(setter);
-	}
-
-	private static void processForLoop(String iterator, String collectionPath, String body, List<String> logicBlocks,
-			Map<String, ClassStructure> classes, ClassStructure inputClass, ClassStructure outputClass,
-			Map<String, String> references) {
-		// Check for nested loops
-		Matcher nestedLoopMatcher = NESTED_LOOP_PATTERN.matcher(body);
-		if (nestedLoopMatcher.find()) {
-			processNestedLoop(iterator, collectionPath, body, logicBlocks, classes, inputClass, outputClass, references);
-			return;
-		}
-
-		if (body.contains("httpCode") || body.contains("httpMessage") || body.contains("moreInformation")) {
-			return;
-		}
-
-		String resolvedCollectionPath = resolveReference(collectionPath, references);
-		String fullCollectionPath = resolvedCollectionPath.startsWith("InputRoot") ? resolvedCollectionPath
-				: "InputRoot.JSON.Data." + resolvedCollectionPath;
-		String collectionName = extractCollectionName(fullCollectionPath, true); // true for FOR loop
-		String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
-		ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
-
-		inputClass.addField(collectionName, "List<" + itemClassName + ">");
-
-		String outputCollectionPath = extractOutputCollection(body, references, collectionName);
-		String[] outputParts = outputCollectionPath.split("\\.");
-		String collectionField = outputParts[outputParts.length - 1].toLowerCase();
-
-		Matcher bodyMatcher = Pattern.compile("SET\\s+([^=]+)\\.Item\\[(?:I|\\d+)\\]\\.(\\w+)\\s*=\\s*([^;]+);")
-				.matcher(body);
-		while (bodyMatcher.find()) {
-			String fieldName = bodyMatcher.group(2).toLowerCase();
-			String value = bodyMatcher.group(3).trim();
-			String type = determineFieldType(fieldName, outputCollectionPath, value);
-
-			if (fieldName.equals("httpcode") || fieldName.equals("httpmessage")
-					|| fieldName.equals("moreinformation")) {
-                continue;
+            if (!isWithinProcedure(assignmentMatcher.start(), procedureMatcher)) {
+                processAssignment(assignmentMatcher.group(1).trim(), assignmentMatcher.group(2).trim(), logicBlocks,
+                        classes, inputClass, outputClass, references, headerKeys, variables, null);
             }
-
-            Matcher castMatcher = CAST_PATTERN.matcher(value);
-            if (castMatcher.find()) {
-				type = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
-            }
-			itemClass.addField(fieldName, type);
-		}
-
-		outputClass.addField(collectionField, "List<" + itemClassName + ">");
-
-		StringBuilder loop = new StringBuilder().append("List<").append(itemClassName).append("> ")
-				.append(collectionField).append(" = new ArrayList<>();\n").append("if (input.get")
-				.append(capitalize(collectionName)).append("() != null) {\n").append("    ").append(collectionField)
-				.append(" = input.get").append(capitalize(collectionName)).append("().stream()\n")
-				.append("        .map(").append(iterator).append(" -> {\n").append("            ").append(itemClassName)
-				.append(" outputItem = new ").append(itemClassName).append("();\n")
-				.append(convertLoopBody(body, iterator, "outputItem", references))
-				.append("            return outputItem;\n").append("        })\n")
-				.append("        .collect(Collectors.toList());\n").append("}\n").append("output.set")
-				.append(capitalize(collectionField)).append("(").append(collectionField).append(");");
-
-		logicBlocks.add(loop.toString());
-	}
-
-	private static void processWhileLoop(String refName, String body, String priorContent, List<String> logicBlocks,
-			Map<String, ClassStructure> classes, ClassStructure inputClass, ClassStructure outputClass,
-			Map<String, String> references) {
-		if (body.contains("httpCode") || body.contains("httpMessage") || body.contains("moreInformation")) {
-			return;
-		}
-
-		String refPath = references.getOrDefault(refName, "");
-		if (!refPath.matches("InputRoot\\.(XML|XMLNSC|JSON\\.Data)(?:\\.\\*:?\\w+)*"))
-			return;
-
-		String collectionName = extractCollectionName(refPath, false); // false for WHILE loop
-		String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
-		ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
-
-		inputClass.addField(collectionName, "List<" + itemClassName + ">");
-
-		String outputCollectionPath = extractOutputCollection(body, references, collectionName);
-		String[] outputParts = outputCollectionPath.split("\\.");
-		String collectionField = outputParts[outputParts.length - 1].toLowerCase();
-
-		Matcher bodyMatcher = Pattern.compile("SET\\s+([^=]+)\\.Item\\[(?:I|\\d+)\\]\\.(\\w+)\\s*=\\s*([^;]+);")
-				.matcher(body);
-		while (bodyMatcher.find()) {
-			String fieldName = bodyMatcher.group(2).toLowerCase();
-			String value = bodyMatcher.group(3).trim();
-			String resolvedValue = resolveReference(value, references);
-			String type = determineFieldType(fieldName, outputCollectionPath, value);
-
-			if (fieldName.equals("httpcode") || fieldName.equals("httpmessage")
-					|| fieldName.equals("moreinformation")) {
-				continue;
-			}
-
-			Matcher castMatcher = CAST_PATTERN.matcher(value);
-			if (castMatcher.find()) {
-				type = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
-            }
-			itemClass.addField(fieldName, type);
-		}
-
-		outputClass.addField(collectionField, "List<" + itemClassName + ">");
-
-		StringBuilder loop = new StringBuilder().append("List<").append(itemClassName).append("> ")
-				.append(collectionField).append(" = new ArrayList<>();\n").append("if (input.get")
-				.append(capitalize(collectionName)).append("() != null) {\n").append("    ").append(collectionField)
-				.append(" = input.get").append(capitalize(collectionName)).append("().stream()\n");
-
-		Matcher moveMatcher = MOVE_PATTERN.matcher(priorContent);
-		if (moveMatcher.find() && moveMatcher.group(1).equals(refName)) {
-			loop.append("        .skip(1) // MOVE FIRSTCHILD\n");
         }
 
-		loop.append("        .map(").append(refName.toLowerCase()).append(" -> {\n").append("            ")
-				.append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
-				.append(convertLoopBody(body, refName.toLowerCase(), "outputItem", references))
-				.append("            return outputItem;\n").append("        })\n")
-				.append("        .collect(Collectors.toList());\n").append("}\n").append("output.set")
-				.append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+        Matcher forMatcher = FOR_PATTERN.matcher(esqlScript);
+        while (forMatcher.find()) {
+            if (!isWithinProcedure(forMatcher.start(), procedureMatcher)) {
+                processForLoop(forMatcher.group(1), forMatcher.group(2), forMatcher.group(3), logicBlocks, classes,
+                        inputClass, outputClass, references, variables, 0);
+            }
+        }
 
-		logicBlocks.add(loop.toString());
-	}
+        Matcher whileMatcher = WHILE_PATTERN.matcher(esqlScript);
+        while (whileMatcher.find()) {
+            if (!isWithinProcedure(whileMatcher.start(), procedureMatcher)) {
+                processWhileLoop(whileMatcher.group(1), whileMatcher.group(2), esqlScript.substring(0, whileMatcher.start()),
+                        logicBlocks, classes, inputClass, outputClass, references, variables);
+            }
+        }
 
-	private static String generateSetter(String outputField, String value, Map<String, String> references,
-			String castType, String coalesceValue, String defaultValue, Matcher headerMatcher) {
-		// Handle date format
-		Matcher dateMatcher = DATE_PATTERN.matcher(value);
-		if (dateMatcher.find()) {
-			String dateExpr = dateMatcher.group(1);
-			String format = dateMatcher.group(2);
-			String javaFormat = convertDateFormat(format);
-			
-			// Resolve the date expression value
-			String resolvedDateExpr = resolveReference(dateExpr, references);
-			String dateValue;
-			
-			if (resolvedDateExpr.startsWith("InputRoot")) {
-				// Handle InputRoot reference
-				String[] parts = resolvedDateExpr.split("\\.");
-				StringBuilder inputGetter = new StringBuilder("input");
-				
-				// Handle MRM paths
-				if (resolvedDateExpr.contains("MRM")) {
-					for (int i = 2; i < parts.length - 1; i++) {
-						if (!parts[i].equals("MRM")) {
-							inputGetter.append(".get").append(capitalize(parts[i].replace("*:", ""))).append("()");
-						}
-					}
-				} else {
-					// Handle other paths
-					if (parts.length > 3) {
-						inputGetter.append(".get").append(capitalize(parts[3].replace("*:", ""))).append("()");
-					}
-				}
-				
-				inputGetter.append(".get").append(capitalize(parts[parts.length - 1].replace("*:", ""))).append("()");
-				dateValue = inputGetter.toString();
-			} else {
-				// Handle direct value or other references
-				dateValue = convertValue(resolvedDateExpr);
-			}
-			
-			// Generate code to parse and format the date
-			StringBuilder dateCode = new StringBuilder();
-			dateCode.append("LocalDateTime.parse(")
-					.append(dateValue)
-					.append(", DateTimeFormatter.ofPattern(\"")
-					.append(javaFormat)
-					.append("\"))");
-			
-			return "output.set" + capitalize(outputField) + "(" + dateCode.toString() + ");";
-		}
+        Matcher createLastChildMatcher = CREATE_LASTCHILD_PATTERN.matcher(esqlScript);
+        while (createLastChildMatcher.find()) {
+            processCreateLastChild(createLastChildMatcher.group(1), createLastChildMatcher.group(2), logicBlocks, classes, outputClass, references);
+        }
 
-		headerMatcher.reset(value);
-		if (headerMatcher.find() && references.containsKey(headerMatcher.group(1))
-				&& references.get(headerMatcher.group(1)).contains("HTTPRequestHeader")) {
-			String headerKey = headerMatcher.group(2).toLowerCase();
-			return "output.set" + capitalize(outputField) + "(headersMap.get(\"" + headerKey + "\"));";
-		}
+        Matcher createFieldMatcher = CREATE_FIELD_PATTERN.matcher(esqlScript);
+        while (createFieldMatcher.find()) {
+            processCreateField(createFieldMatcher.group(1), createFieldMatcher.group(2), createFieldMatcher.group(3), logicBlocks, classes, outputClass, references);
+        }
 
-		String resolvedValue = resolveReference(value, references);
-		Matcher inputMatcher = INPUT_PATTERN.matcher(resolvedValue);
-		if (inputMatcher.find()) {
-			String[] inputParts = resolvedValue.split("\\.");
-			String inputField = inputParts[inputParts.length - 1].replace("*:", "").toLowerCase();
-			StringBuilder inputGetter = new StringBuilder("input");
-			
-			// Handle MRM paths
-			if (resolvedValue.contains("MRM")) {
-				for (int i = 2; i < inputParts.length - 1; i++) {
-					if (!inputParts[i].equals("MRM")) {
-						inputGetter.append(".get").append(capitalize(inputParts[i].replace("*:", ""))).append("()");
-					}
-				}
-			} else {
-				// Handle other paths
-				if (inputParts.length > 3) {
-					inputGetter.append(".get").append(capitalize(inputParts[3].replace("*:", ""))).append("()");
-				}
-			}
-			
-			inputGetter.append(".get").append(capitalize(inputField)).append("()");
+        result.put("classes", classes);
+        result.put("logicBlocks", logicBlocks);
+        result.put("procedureBlocks", procedureBlocks);
+        result.put("headerKeys", headerKeys);
+        return result;
+    }
 
-			if (coalesceValue != null) {
-				String coalesceExpression = "Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + ")";
-				if (castType != null) {
-					coalesceExpression = applyCasting(coalesceExpression, castType);
-				}
-				return "output.set" + capitalize(outputField) + "(" + coalesceExpression + ");";
-			} else if (castType != null) {
-				String castExpression = applyCasting(inputGetter.toString(), castType);
-				return "output.set" + capitalize(outputField) + "(" + castExpression + ");";
-			} else {
-				return "output.set" + capitalize(outputField) + "(" + inputGetter + ");";
-			}
-		}
+    private static void parseProcedureBody(String body, List<String> procLogic, Map<String, ClassStructure> classes,
+            ClassStructure inputClass, ClassStructure outputClass, Map<String, String> references, Set<String> headerKeys,
+            Map<String, String> variables) {
+        Matcher assignmentMatcher = ASSIGNMENT_PATTERN.matcher(body);
+        while (assignmentMatcher.find()) {
+            processAssignment(assignmentMatcher.group(1).trim(), assignmentMatcher.group(2).trim(), procLogic, classes,
+                    inputClass, outputClass, references, headerKeys, variables, null);
+        }
 
-		Matcher substringMatcher = SUBSTRING_PATTERN.matcher(value);
-		if (substringMatcher.find()) {
-			String expr = substringMatcher.group(1);
-			String operation = substringMatcher.group(2);
-			String delimiter = substringMatcher.group(3);
-			String subExpr = expr.contains("InputRoot")
-					? "input.get" + capitalize(expr.split("\\.")[expr.split("\\.").length - 1].replace("*:", "")) + "()"
-					: convertValue(expr);
-			String substringExpr = "AFTER".equals(operation)
-					? subExpr + ".substring(" + subExpr + ".indexOf(\"" + delimiter + "\") + 1)"
-					: subExpr + ".substring(0, " + subExpr + ".indexOf(\"" + delimiter + "\"))";
-			return "output.set" + capitalize(outputField) + "(" + substringExpr + ");";
-		}
+        Matcher forMatcher = FOR_PATTERN.matcher(body);
+        while (forMatcher.find()) {
+            processForLoop(forMatcher.group(1), forMatcher.group(2), forMatcher.group(3), procLogic, classes,
+                    inputClass, outputClass, references, variables, 0);
+        }
 
-		return "output.set" + capitalize(outputField) + "(" + convertValue(value) + ");";
-	}
+        Matcher whileMatcher = WHILE_PATTERN.matcher(body);
+        while (whileMatcher.find()) {
+            processWhileLoop(whileMatcher.group(1), whileMatcher.group(2), body.substring(0, whileMatcher.start()),
+                    procLogic, classes, inputClass, outputClass, references, variables);
+        }
 
-	private static String resolveReference(String path, Map<String, String> references) {
-		// First check if the path is a direct reference
-		if (references.containsKey(path)) {
-			return references.get(path);
-		}
-		
-		// Then check if the path starts with any reference
-		for (Map.Entry<String, String> entry : references.entrySet()) {
-			if (path.startsWith(entry.getKey() + ".")) {
-				return entry.getValue() + path.substring(entry.getKey().length());
-			}
-		}
-		
-		return path;
-	}
+        Matcher createLastChildMatcher = CREATE_LASTCHILD_PATTERN.matcher(body);
+        while (createLastChildMatcher.find()) {
+            processCreateLastChild(createLastChildMatcher.group(1), createLastChildMatcher.group(2), procLogic, classes, outputClass, references);
+        }
 
-	private static String extractCollectionName(String path, boolean isForLoop) {
-		String[] parts = path.split("\\.");
-		if (isForLoop) {
-			// For FOR loops like InputRef.*:items.*:item, take 'items'
-			for (int i = parts.length - 1; i >= 0; i--) {
-				if (parts[i].startsWith("*:") && !parts[i].equals("*:item")) {
-					return parts[i].replace("*:", "").toLowerCase();
-				}
-			}
-		} else {
-			// For WHILE loops like InputRoot.XMLNSC.*:carrier, take 'carrier'
-			for (int i = parts.length - 1; i >= 0; i--) {
-				if (parts[i].startsWith("*:") && !parts[i].matches("Item\\[.*?\\]")) {
-					return parts[i].replace("*:", "").toLowerCase();
-				}
-			}
-		}
-		return parts[parts.length - 1].replace("*:", "").toLowerCase();
-	}
-
-	private static void processPath(String fullPath, Map<String, ClassStructure> classes, ClassStructure rootClass,
-			boolean isOutput, String value) {
-		String[] parts = fullPath.split("\\.");
-		if (parts.length < 4) {
-			return;
-		}
-
-		// Handle MRM paths
-		if (fullPath.contains("MRM")) {
-			processMrmPath(fullPath, classes, rootClass, isOutput, value);
-			return;
-		}
-
-		// Handle XMLNSC paths
-		if (fullPath.contains("XMLNSC")) {
-			processXmlnscPath(fullPath, classes, rootClass, isOutput, value);
-			return;
-		}
-
-		// Handle wildcards and regular paths
-		String fieldOrClassName = parts[3].replace("*:", "").toLowerCase();
-		if (parts.length == 4 && !fullPath.contains(".Item[")) {
-			String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value
-					: determineFieldType(fieldOrClassName, fullPath, value);
-			rootClass.addField(fieldOrClassName, type);
-		} else if (parts.length > 4 && parts[4].matches("Item\\[.*?\\]")) {
-			String collectionName = fieldOrClassName;
-			String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
-			rootClass.addField(collectionName, "List<" + itemClassName + ">");
-			classes.computeIfAbsent(itemClassName, ClassStructure::new);
-		} else if (parts.length >= 4 && fullPath.contains("XMLNSC")) {
-			String nestedClassName = capitalize(fieldOrClassName);
-			ClassStructure nestedClass = classes.computeIfAbsent(nestedClassName, ClassStructure::new);
-			rootClass.addField(fieldOrClassName, "List<" + nestedClassName + ">"); // Assume list for loops
+        Matcher createFieldMatcher = CREATE_FIELD_PATTERN.matcher(body);
+        while (createFieldMatcher.find()) {
+            processCreateField(createFieldMatcher.group(1), createFieldMatcher.group(2), createFieldMatcher.group(3), procLogic, classes, outputClass, references);
         }
     }
 
-	private static void processMrmPath(String fullPath, Map<String, ClassStructure> classes,
-			ClassStructure rootClass, boolean isOutput, String value) {
-		String[] parts = fullPath.split("\\.");
-		StringBuilder currentPath = new StringBuilder();
-		ClassStructure currentClass = rootClass;
+    private static void processAssignment(String outputPath, String value, List<String> logicBlocks,
+            Map<String, ClassStructure> classes, ClassStructure inputClass, ClassStructure outputClass,
+            Map<String, String> references, Set<String> headerKeys, Map<String, String> variables, String iterator) {
+        String resolvedOutputPath = resolveReference(outputPath, references);
+        String resolvedValue = resolveReference(value, references);
 
-		// Skip InputRoot.MRM
-		for (int i = 2; i < parts.length; i++) {
-			String part = parts[i];
-			if (part.equals("MRM")) {
-				continue;
-			}
-			
-			if (part.startsWith("*:")) {
-				part = part.substring(2);
-			}
-			
-			currentPath.append(part);
-			if (i < parts.length - 1 && !parts[i + 1].matches("Item\\[.*?\\]")) {
-				String className = capitalize(part);
-				ClassStructure nestedClass = classes.computeIfAbsent(className, ClassStructure::new);
-				currentClass.addField(part.toLowerCase(), "List<" + className + ">");
-				currentClass = nestedClass;
-			} else if (i == parts.length - 1) {
-				String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value
-						: determineFieldType(part.toLowerCase(), fullPath, value);
-				currentClass.addField(part.toLowerCase(), type);
-			}
-		}
-	}
-
-	private static void processXmlnscPath(String fullPath, Map<String, ClassStructure> classes,
-			ClassStructure rootClass, boolean isOutput, String value) {
-		String[] parts = fullPath.split("\\.");
-		String nestedClassName = capitalize(parts[3].replace("*:", "").toLowerCase());
-		ClassStructure nestedClass = classes.computeIfAbsent(nestedClassName, ClassStructure::new);
-		rootClass.addField(parts[3].replace("*:", "").toLowerCase(), "List<" + nestedClassName + ">");
-	}
-
-	private static void generateModelClasses(Map<String, Object> parseResult) throws IOException {
-		Map<String, ClassStructure> classes = (Map<String, ClassStructure>) parseResult.get("classes");
-
-		for (ClassStructure cls : classes.values()) {
-			if (cls.name.isEmpty() || cls.fields.isEmpty())
-				continue;
-			StringBuilder content = new StringBuilder().append("package ").append(MODEL_PACKAGE).append(";\n\n")
-					.append("import lombok.Data;\n").append("import java.util.List;\n\n").append("@Data\n")
-					.append("public class ").append(cls.name).append(" {\n");
-
-			for (Map.Entry<String, String> field : cls.fields.entrySet()) {
-				content.append("    private ").append(field.getValue()).append(" ").append(field.getKey())
-						.append(";\n");
-			}
-			content.append("}\n");
-			writeToFile(OUTPUT_DIR + cls.name + ".java", content.toString());
-		}
-	}
-
-	private static void generateMapperClass(Map<String, Object> parseResult) throws IOException {
-		List<String> logicBlocks = (List<String>) parseResult.get("logicBlocks");
-		Map<String, List<String>> procedureBlocks = (Map<String, List<String>>) parseResult.get("procedureBlocks");
-		Set<String> headerKeys = (Set<String>) parseResult.get("headerKeys");
-
-		StringBuilder mapper = new StringBuilder()
-			.append("package ").append(MAPPER_PACKAGE).append(";\n\n")
-			.append("import ").append(MODEL_PACKAGE).append(".*;\n")
-			.append("import java.util.*;\n")
-			.append("import java.util.stream.Collectors;\n")
-			.append("import java.time.LocalDateTime;\n")
-			.append("import java.time.format.DateTimeFormatter;\n")
-			.append("import java.time.format.DateTimeParseException;\n\n")
-			.append("public class DataMapper {\n");
-
-		for (Map.Entry<String, List<String>> entry : procedureBlocks.entrySet()) {
-			String methodName = entry.getKey().substring(0, 1).toLowerCase() + entry.getKey().substring(1);
-			mapper.append("    private void ").append(methodName)
-					.append("(Input input, Output output, Map<String, String> headersMap) {\n");
-			for (String block : entry.getValue()) {
-				mapper.append("        ").append(block).append("\n");
-            }
-			mapper.append("    }\n\n");
-		}
-
-		mapper.append("    public Output map(Input input, Map<String, String> headers, String requestIdentifier) {\n")
-				.append("        Map<String, String> headersMap = new HashMap<>();\n");
-
-		for (String key : headerKeys) {
-			mapper.append("        headersMap.put(\"").append(key).append("\", headers.get(\"").append(key)
-					.append("\"));\n");
-		}
-
-		mapper.append("        Output output = new Output();\n");
-
-		for (String block : logicBlocks) {
-			mapper.append("        ").append(block).append("\n");
-		}
-
-		for (String procName : procedureBlocks.keySet()) {
-			String methodName = procName.substring(0, 1).toLowerCase() + procName.substring(1);
-			mapper.append("        ").append(methodName).append("(input, output, headersMap);\n");
-		}
-
-		mapper.append("        return output;\n").append("    }\n").append("}\n");
-
-		writeToFile(OUTPUT_DIR + "DataMapper.java", mapper.toString());
-	}
-
-	static class ClassStructure {
-		String name;
-		Map<String, String> fields = new LinkedHashMap<>();
-
-		ClassStructure(String name) {
-			this.name = name;
-		}
-
-		void addField(String name, String type) {
-			fields.putIfAbsent(name, type);
-		}
-	}
-
-	private static String determineFieldType(String fieldName, String fullPath, String value) {
-		if (value != null) {
-			// Check for date fields
-			if (fieldName.toLowerCase().contains("date") || fieldName.toLowerCase().contains("time")) {
-				return "LocalDateTime";
-			}
-			
-			if (value.matches("'true'|'false'")) {
-				return "Boolean";
-			}
-			if (value.matches("\\d+")) {
-				return "Integer";
-			}
-			if (value.startsWith("'") && value.endsWith("'")) {
-				return "String";
-			}
-			if (!value.contains("InputRoot")) {
-				return "String";
-			}
-		}
-		return "String";
-	}
-
-	private static String capitalize(String str) {
-		if (str == null || str.isEmpty())
-			return str;
-		return str.substring(0, 1).toUpperCase() + str.substring(1);
-	}
-
-	private static String convertValue(String value) {
-		if (value.startsWith("'") && value.endsWith("'")) {
-			String val = value.substring(1, value.length() - 1);
-			if ("true".equalsIgnoreCase(val) || "false".equalsIgnoreCase(val))
-				return val.toLowerCase();
-			return "\"" + val + "\"";
-		}
-		return value;
-	}
-
-	private static String applyCasting(String expression, String javaType) {
-		switch (javaType) {
-		case "Integer":
-			return "Integer.parseInt(" + expression + ")";
-		case "Float":
-			return "Float.parseFloat(" + expression + ")";
-		case "Double":
-			return "Double.parseDouble(" + expression + ")";
-		case "Boolean":
-			return "Boolean.parseBoolean(" + expression + ")";
-		case "String":
-			return "String.valueOf(" + expression + ")";
-		default:
-			return expression;
-		}
-	}
-
-	private static String convertLoopBody(String body, String iterator, String itemVar,
-			Map<String, String> references) {
-		StringBuilder result = new StringBuilder();
-		Matcher matcher = Pattern.compile("SET\\s+([^=]+)\\.Item\\[(?:I|\\d+)\\]\\.(\\w+)\\s*=\\s*([^;]+);")
-				.matcher(body);
-		while (matcher.find()) {
-			String field = matcher.group(2).toLowerCase();
-			String value = matcher.group(3).trim();
-			String resolvedValue = resolveReference(value, references);
-
-			if (field.equals("httpcode") || field.equals("httpmessage") || field.equals("moreinformation")
-					|| resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
-					|| resolvedValue.contains("moreInformation")) {
-				continue;
-			}
-
-			String setter;
-			Matcher castMatcher = CAST_PATTERN.matcher(value);
-			if (castMatcher.find()) {
-				String castExpr = castMatcher.group(1).trim();
-				String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
-				String[] inputParts = castExpr.split("\\.");
-				String inputField = inputParts[inputParts.length - 1].replace("*:", "").toLowerCase();
-				String inputGetter = iterator + ".get" + capitalize(inputField) + "()";
-				setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
-			} else {
-				String[] inputParts = value.split("\\.");
-				String inputField = inputParts[inputParts.length - 1].replace("*:", "").toLowerCase();
-				String inputGetter = iterator + ".get" + capitalize(inputField) + "()";
-				setter = itemVar + ".set" + capitalize(field) + "(" + inputGetter + ");";
-			}
-			result.append("            ").append(setter).append("\n"); // Stream indentation
-		}
-		return result.toString();
-	}
-
-	private static String extractOutputCollection(String body, Map<String, String> references,
-			String inputCollectionName) {
-		Matcher matcher = Pattern.compile("SET\\s+([^\\s]+)\\.Item\\[(?:I|\\d+)\\]").matcher(body);
-		if (matcher.find()) {
-			String rawPath = matcher.group(1).trim();
-			String resolvedPath = resolveReference(rawPath, references);
-			if (!resolvedPath.startsWith("OutputRoot.JSON.Data.")) {
-				resolvedPath = "OutputRoot.JSON.Data." + resolvedPath;
-			}
-			return resolvedPath;
+        if (!resolvedOutputPath.startsWith("OutputRoot.JSON.Data") || resolvedOutputPath.contains("httpCode")
+                || resolvedOutputPath.contains("httpMessage") || resolvedOutputPath.contains("moreInformation")
+                || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
+                || resolvedValue.contains("moreInformation")) {
+            return;
         }
-		return "OutputRoot.JSON.Data." + inputCollectionName;
-	}
 
-	private static boolean isWithinProcedure(int position, Matcher procedureMatcher) {
-		procedureMatcher.reset();
-		while (procedureMatcher.find()) {
-			if (position >= procedureMatcher.start() && position <= procedureMatcher.end()) {
-				return true;
-			}
-		}
-		return false;
-	}
+        String fullOutputPath = resolvedOutputPath;
+        String castType = null;
+        String coalesceValue = null;
+        String defaultValue = null;
 
-	private static void writeToFile(String filePath, String content) throws IOException {
-		try (BufferedWriter writer = new BufferedWriter(new FileWriter(filePath, StandardCharsets.UTF_8))) {
-			writer.write(content);
-		}
-	}
+        Matcher castMatcher = CAST_PATTERN.matcher(value);
+        if (castMatcher.find()) {
+            value = castMatcher.group(1).trim();
+            castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+        }
 
-	private static void processNestedLoop(String outerIterator, String outerCollectionPath, String body,
-			List<String> logicBlocks, Map<String, ClassStructure> classes, ClassStructure inputClass,
-			ClassStructure outputClass, Map<String, String> references) {
-		
-		Matcher nestedLoopMatcher = NESTED_LOOP_PATTERN.matcher(body);
-		if (!nestedLoopMatcher.find()) {
-			return;
-		}
+        Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
+        if (coalesceMatcher.find()) {
+            String[] args = coalesceMatcher.group(1).split(",");
+            coalesceValue = args[0].trim();
+            defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
+            value = coalesceValue;
+        }
 
-		String innerIterator = nestedLoopMatcher.group(3);
-		String innerCollectionPath = nestedLoopMatcher.group(4);
-		String innerBody = nestedLoopMatcher.group(5);
-		String outerBody = nestedLoopMatcher.group(6);
+        processPath(fullOutputPath, classes, outputClass, true, castType != null ? castType : value);
 
-		// Process outer collection
-		String outerCollectionName = extractCollectionName(outerCollectionPath, true);
-		String outerItemClassName = capitalize(outerCollectionName.replaceAll("s$", ""));
-		ClassStructure outerItemClass = classes.computeIfAbsent(outerItemClassName, ClassStructure::new);
-		inputClass.addField(outerCollectionName, "List<" + outerItemClassName + ">");
+        Matcher inputMatcher = INPUT_PATTERN.matcher(value);
+        while (inputMatcher.find()) {
+            String inputPath = inputMatcher.group(1);
+            String fieldName = inputMatcher.group(2).replace("*:", "");
+            processPath(inputPath, classes, inputClass, false, null);
+        }
 
-		// Process inner collection
-		String innerCollectionName = extractCollectionName(innerCollectionPath, true);
-		String innerItemClassName = capitalize(innerCollectionName.replaceAll("s$", ""));
-		ClassStructure innerItemClass = classes.computeIfAbsent(innerItemClassName, ClassStructure::new);
-		outerItemClass.addField(innerCollectionName, "List<" + innerItemClassName + ">");
+        Matcher headerMatcher = HEADER_PATTERN.matcher(value);
+        if (headerMatcher.find() && references.containsKey(headerMatcher.group(1))) {
+            String refPath = references.get(headerMatcher.group(1));
+            if (refPath.contains("HTTPRequestHeader")) {
+                String headerKey = headerMatcher.group(2).toLowerCase();
+                headerKeys.add(headerKey);
+            }
+        }
 
-		// Process output collections
-		String outerOutputPath = extractOutputCollection(outerBody, references, outerCollectionName);
-		String innerOutputPath = extractOutputCollection(innerBody, references, innerCollectionName);
-		String[] outerOutputParts = outerOutputPath.split("\\.");
-		String outerCollectionField = outerOutputParts[outerOutputParts.length - 1].toLowerCase();
-		outputClass.addField(outerCollectionField, "List<" + outerItemClassName + ">");
+        String[] outputParts = resolvedOutputPath.split("\\.");
+        String outputField = outputParts[outputParts.length - 1].toLowerCase();
+        String setter = generateSetter(outputField, value, references, castType, coalesceValue, defaultValue, headerMatcher, iterator);
+        logicBlocks.add(setter);
+    }
 
-		// Process inner loop body
-		Matcher innerBodyMatcher = Pattern.compile("SET\\s+([^=]+)\\.Item\\[(?:I|\\d+)\\]\\.(\\w+)\\s*=\\s*([^;]+);")
-				.matcher(innerBody);
-		while (innerBodyMatcher.find()) {
-			String fieldName = innerBodyMatcher.group(2).toLowerCase();
-			String value = innerBodyMatcher.group(3).trim();
-			String type = determineFieldType(fieldName, innerOutputPath, value);
+    private static void processForLoop(String iterator, String collectionPath, String body, List<String> logicBlocks,
+            Map<String, ClassStructure> classes, ClassStructure inputClass, ClassStructure outputClass,
+            Map<String, String> references, Map<String, String> variables, int nestingLevel) {
+        if (body.contains("httpCode") || body.contains("httpMessage") || body.contains("moreInformation")) {
+            return;
+        }
 
-			if (fieldName.equals("httpcode") || fieldName.equals("httpmessage")
-					|| fieldName.equals("moreinformation")) {
-				continue;
-			}
+        String resolvedCollectionPath = resolveReference(collectionPath, references);
+        String fullCollectionPath = resolvedCollectionPath.startsWith("InputRoot") ? resolvedCollectionPath
+                : "InputRoot.JSON.Data." + resolvedCollectionPath;
+        String collectionName = extractCollectionName(fullCollectionPath, true);
+        String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
+        ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
 
-			Matcher castMatcher = CAST_PATTERN.matcher(value);
-			if (castMatcher.find()) {
-				type = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
-			}
-			innerItemClass.addField(fieldName, type);
-		}
+        ClassStructure parentClass = nestingLevel == 0 ? inputClass : classes.get(capitalize(extractCollectionName(resolveReference(collectionPath.split("\\.")[0], references), true).replaceAll("s$", "")));
+        parentClass.addField(collectionName, "List<" + itemClassName + ">");
 
-		// Process outer loop body
-		Matcher outerBodyMatcher = Pattern.compile("SET\\s+([^=]+)\\.Item\\[(?:I|\\d+)\\]\\.(\\w+)\\s*=\\s*([^;]+);")
-				.matcher(outerBody);
-		while (outerBodyMatcher.find()) {
-			String fieldName = outerBodyMatcher.group(2).toLowerCase();
-			String value = outerBodyMatcher.group(3).trim();
-			String type = determineFieldType(fieldName, outerOutputPath, value);
+        String outputCollectionPath = extractOutputCollection(body, references, collectionName);
+        String[] outputParts = outputCollectionPath.split("\\.");
+        String collectionField = outputParts[outputParts.length - 1].toLowerCase();
 
-			if (fieldName.equals("httpcode") || fieldName.equals("httpmessage")
-					|| fieldName.equals("moreinformation")) {
-				continue;
-			}
+        Matcher bodyMatcher = LOOP_INDEX_PATTERN.matcher(body);
+        while (bodyMatcher.find()) {
+            String fieldName = bodyMatcher.group(3).toLowerCase();
+            String value = bodyMatcher.group(4).trim();
+            String type = determineFieldType(fieldName, outputCollectionPath, value);
+            if (!fieldName.equals("httpcode") && !fieldName.equals("httpmessage") && !fieldName.equals("moreinformation")) {
+                Matcher castMatcher = CAST_PATTERN.matcher(value);
+                if (castMatcher.find()) {
+                    type = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+                }
+                itemClass.addField(fieldName, type);
+            }
+        }
 
-			Matcher castMatcher = CAST_PATTERN.matcher(value);
-			if (castMatcher.find()) {
-				type = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
-			}
-			outerItemClass.addField(fieldName, type);
-		}
+        if (nestingLevel == 0) {
+            outputClass.addField(collectionField, "List<" + itemClassName + ">");
+        }
 
-		// Generate nested loop code
-		StringBuilder loop = new StringBuilder()
-			.append("List<").append(outerItemClassName).append("> ")
-			.append(outerCollectionField).append(" = new ArrayList<>();\n")
-			.append("if (input.get").append(capitalize(outerCollectionName)).append("() != null) {\n")
-			.append("    ").append(outerCollectionField)
-			.append(" = input.get").append(capitalize(outerCollectionName)).append("().stream()\n")
-			.append("        .map(").append(outerIterator).append(" -> {\n")
-			.append("            ").append(outerItemClassName).append(" outerItem = new ").append(outerItemClassName).append("();\n")
-			.append("            List<").append(innerItemClassName).append("> innerList = new ArrayList<>();\n")
-			.append("            if (").append(outerIterator).append(".get").append(capitalize(innerCollectionName)).append("() != null) {\n")
-			.append("                innerList = ").append(outerIterator).append(".get").append(capitalize(innerCollectionName)).append("().stream()\n")
-			.append("                    .map(").append(innerIterator).append(" -> {\n")
-			.append("                        ").append(innerItemClassName).append(" innerItem = new ").append(innerItemClassName).append("();\n")
-			.append(convertLoopBody(innerBody, innerIterator, "innerItem", references))
-			.append("                        return innerItem;\n")
-			.append("                    })\n")
-			.append("                    .collect(Collectors.toList());\n")
-			.append("            }\n")
-			.append("            outerItem.set").append(capitalize(innerCollectionName)).append("(innerList);\n")
-			.append(convertLoopBody(outerBody, outerIterator, "outerItem", references))
-			.append("            return outerItem;\n")
-			.append("        })\n")
-			.append("        .collect(Collectors.toList());\n")
-			.append("}\n")
-			.append("output.set").append(capitalize(outerCollectionField)).append("(").append(outerCollectionField).append(");");
+        StringBuilder loop = new StringBuilder();
+        String indent = "    ".repeat(nestingLevel + 1);
+        String counterVar = detectCounterVariable(body, variables);
+        String counterStart = counterVar != null && variables.containsKey(counterVar) ? variables.get(counterVar).split(":")[1] : "0";
 
-		logicBlocks.add(loop.toString());
-	}
+        loop.append(indent).append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
+            .append(indent).append("if (").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("() != null) {\n")
+            .append(indent).append("    ").append(collectionField).append(" = IntStream.range(0, ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("().size())\n")
+            .append(indent).append("        .mapToObj(i -> {\n")
+            .append(indent).append("            ").append(itemClassName).append(" ").append(iterator).append(" = ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("().get(i);\n")
+            .append(indent).append("            ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
+            .append(convertLoopBody(body, iterator, "outputItem", references))
+            .append(indent).append("            return outputItem;\n")
+            .append(indent).append("        })\n")
+            .append(indent).append("        .collect(Collectors.toList());\n")
+            .append(indent).append("}\n");
 
-	private static String convertDateFormat(String esqlFormat) {
-		// Convert ESQL date format to Java DateTimeFormatter format
-		return esqlFormat.replace("%Y", "yyyy")  // Year with century
-						.replace("%y", "yy")      // Year without century
-						.replace("%m", "MM")      // Month (01-12)
-						.replace("%d", "dd")      // Day of month (01-31)
-						.replace("%H", "HH")      // Hour (00-23)
-						.replace("%h", "hh")      // Hour (01-12)
-						.replace("%M", "mm")      // Minute (00-59)
-						.replace("%S", "ss")      // Second (00-59)
-						.replace("%f", "SSS")     // Millisecond (000-999)
-						.replace("%a", "EEE")     // Abbreviated weekday name
-						.replace("%A", "EEEE")    // Full weekday name
-						.replace("%b", "MMM")     // Abbreviated month name
-						.replace("%B", "MMMM")    // Full month name
-						.replace("%p", "a")       // AM/PM marker
-						.replace("%z", "Z")       // Time zone offset
-						.replace("%Z", "z");      // Time zone name
-	}
+        Matcher nestedForMatcher = FOR_PATTERN.matcher(body);
+        if (nestedForMatcher.find()) {
+            processForLoop(nestedForMatcher.group(1), nestedForMatcher.group(2), nestedForMatcher.group(3), logicBlocks, classes, inputClass, outputClass, references, variables, nestingLevel + 1);
+            String nestedCollectionName = extractCollectionName(resolveReference(nestedForMatcher.group(2), references), true);
+            String nestedItemClassName = capitalize(nestedCollectionName.replaceAll("s$", ""));
+            loop.append(indent).append("            List<").append(nestedItemClassName).append("> nestedList = ").append(iterator).append(".get").append(capitalize(nestedCollectionName)).append("().stream()\n")
+                .append(indent).append("                .map(nestedItem -> {\n")
+                .append(indent).append("                    ").append(nestedItemClassName).append(" nestedOutput = new ").append(nestedItemClassName).append("();\n")
+                .append(convertLoopBody(nestedForMatcher.group(3), "nestedItem", "nestedOutput", references))
+                .append(indent).append("                    return nestedOutput;\n")
+                .append(indent).append("                })\n")
+                .append(indent).append("                .collect(Collectors.toList());\n")
+                .append(indent).append("            outputItem.set").append(capitalize(nestedCollectionName)).append("(nestedList);\n");
+        }
+
+        if (nestingLevel == 0) {
+            loop.append(indent).append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+        }
+
+        logicBlocks.add(loop.toString());
+    }
+
+    private static void processWhileLoop(String refName, String body, String priorContent, List<String> logicBlocks,
+            Map<String, ClassStructure> classes, ClassStructure inputClass, ClassStructure outputClass,
+            Map<String, String> references, Map<String, String> variables) {
+        if (body.contains("httpCode") || body.contains("httpMessage") || body.contains("moreInformation")) {
+            return;
+        }
+
+        String refPath = references.getOrDefault(refName, "");
+        if (!refPath.matches("InputRoot\\.(XML|XMLNSC|MRM|JSON\\.Data)(?:\\.\\*:?\\w+)*")) return;
+
+        String collectionName = extractCollectionName(refPath, false);
+        String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
+        ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
+
+        inputClass.addField(collectionName, "List<" + itemClassName + ">");
+
+        String outputCollectionPath = extractOutputCollection(body, references, collectionName);
+        String[] outputParts = outputCollectionPath.split("\\.");
+        String collectionField = outputParts[outputParts.length - 1].toLowerCase();
+
+        Matcher bodyMatcher = LOOP_INDEX_PATTERN.matcher(body);
+        while (bodyMatcher.find()) {
+            String fieldName = bodyMatcher.group(3).toLowerCase();
+            String value = bodyMatcher.group(4).trim();
+            String type = determineFieldType(fieldName, outputCollectionPath, value);
+            if (!fieldName.equals("httpcode") && !fieldName.equals("httpmessage") && !fieldName.equals("moreinformation")) {
+                Matcher castMatcher = CAST_PATTERN.matcher(value);
+                if (castMatcher.find()) {
+                    type = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+                }
+                itemClass.addField(fieldName, type);
+            }
+        }
+
+        outputClass.addField(collectionField, "List<" + itemClassName + ">");
+
+        StringBuilder loop = new StringBuilder();
+        String counterVar = detectCounterVariable(body, variables);
+        String counterStart = counterVar != null && variables.containsKey(counterVar) ? variables.get(counterVar).split(":")[1] : "0";
+
+        loop.append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
+            .append("if (input.get").append(capitalize(collectionName)).append("() != null) {\n")
+            .append("    ").append(collectionField).append(" = IntStream.range(0, input.get").append(capitalize(collectionName)).append("().size())\n");
+
+        Matcher moveMatcher = MOVE_PATTERN.matcher(priorContent);
+        if (moveMatcher.find() && moveMatcher.group(1).equals(refName)) {
+            loop.append("        .skip(1) // MOVE FIRSTCHILD\n");
+        }
+
+        loop.append("        .mapToObj(i -> {\n")
+            .append("            ").append(itemClassName).append(" ").append(refName.toLowerCase()).append(" = input.get").append(capitalize(collectionName)).append("().get(i);\n")
+            .append("            ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
+            .append(convertLoopBody(body, refName.toLowerCase(), "outputItem", references))
+            .append("            return outputItem;\n")
+            .append("        })\n")
+            .append("        .collect(Collectors.toList());\n")
+            .append("}\n")
+            .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+
+        logicBlocks.add(loop.toString());
+    }
+
+    private static void processCreateLastChild(String parentPath, String name, List<String> logicBlocks,
+            Map<String, ClassStructure> classes, ClassStructure outputClass, Map<String, String> references) {
+        String resolvedPath = resolveReference(parentPath, references);
+        String[] parts = resolvedPath.split("\\.");
+        String collectionField = parts[parts.length - 1].toLowerCase();
+        String itemClassName = capitalize(collectionField.replaceAll("s$", ""));
+        ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
+        outputClass.addField(collectionField, "List<" + itemClassName + ">");
+
+        StringBuilder create = new StringBuilder()
+            .append("List<").append(itemClassName).append("> ").append(collectionField).append(" = output.get").append(capitalize(collectionField)).append("() == null ? new ArrayList<>() : output.get").append(capitalize(collectionField)).append("();\n")
+            .append(itemClassName).append(" newItem = new ").append(itemClassName).append("();\n")
+            .append("newItem.set").append(capitalize(name)).append("(\"\");\n")
+            .append(collectionField).append(".add(newItem);\n")
+            .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+
+        logicBlocks.add(create.toString());
+        itemClass.addField(name.toLowerCase(), "String");
+    }
+
+    private static void processCreateField(String parentPath, String fieldName, String typeName, List<String> logicBlocks,
+            Map<String, ClassStructure> classes, ClassStructure outputClass, Map<String, String> references) {
+        String resolvedPath = resolveReference(parentPath, references);
+        String[] parts = resolvedPath.split("\\.");
+        String className = parts.length > 3 ? capitalize(parts[3].replace("*:", "")) : "Output";
+        ClassStructure targetClass = classes.computeIfAbsent(className, ClassStructure::new);
+        String javaType = TYPE_MAPPING.getOrDefault(typeName.toUpperCase(), "String");
+
+        targetClass.addField(fieldName.toLowerCase(), javaType);
+        if (!className.equals("Output")) {
+            outputClass.addField(parts[3].replace("*:", "").toLowerCase(), className);
+        }
+
+        String setter = "output" + (className.equals("Output") ? "" : ".get" + className + "()") + ".set" + capitalize(fieldName) + "(null);";
+        logicBlocks.add(setter);
+    }
+
+    private static String generateSetter(String outputField, String value, Map<String, String> references,
+            String castType, String coalesceValue, String defaultValue, Matcher headerMatcher, String iterator) {
+        Matcher dateMatcher = DATE_PATTERN.matcher(value);
+        if (dateMatcher.find()) {
+            String dateExpr = dateMatcher.group(1);
+            String format = dateMatcher.group(2);
+            String javaFormat = convertDateFormat(format);
+            String resolvedDateExpr = resolveReference(dateExpr, references);
+            String dateValue = resolvedDateExpr.contains("InputRoot") ? buildInputGetter(resolvedDateExpr, iterator) : convertValue(resolvedDateExpr);
+            return "output.set" + capitalize(outputField) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
+        }
+
+        headerMatcher.reset(value);
+        if (headerMatcher.find() && references.containsKey(headerMatcher.group(1)) && references.get(headerMatcher.group(1)).contains("HTTPRequestHeader")) {
+            String headerKey = headerMatcher.group(2).toLowerCase();
+            return "output.set" + capitalize(outputField) + "(headersMap.get(\"" + headerKey + "\"));";
+        }
+
+        String resolvedValue = resolveReference(value, references);
+        Matcher inputMatcher = INPUT_PATTERN.matcher(resolvedValue);
+        if (inputMatcher.find()) {
+            String inputGetter = buildInputGetter(resolvedValue, iterator);
+            if (coalesceValue != null) {
+                String coalesceExpression = "Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + ")";
+                if (castType != null) {
+                    coalesceExpression = applyCasting(coalesceExpression, castType);
+                }
+                return "output.set" + capitalize(outputField) + "(" + coalesceExpression + ");";
+            } else if (castType != null) {
+                String castExpression = applyCasting(inputGetter, castType);
+                return "output.set" + capitalize(outputField) + "(" + castExpression + ");";
+            } else {
+                return "output.set" + capitalize(outputField) + "(" + inputGetter + ");";
+            }
+        }
+
+        Matcher substringMatcher = SUBSTRING_PATTERN.matcher(value);
+        if (substringMatcher.find()) {
+            String expr = substringMatcher.group(1);
+            String operation = substringMatcher.group(2);
+            String delimiter = substringMatcher.group(3);
+            String subExpr = expr.contains("InputRoot") ? buildInputGetter(expr, iterator) : convertValue(expr);
+            String substringExpr = "AFTER".equals(operation) ? subExpr + ".substring(" + subExpr + ".indexOf(\"" + delimiter + "\") + 1)" : subExpr + ".substring(0, " + subExpr + ".indexOf(\"" + delimiter + "\"))";
+            return "output.set" + capitalize(outputField) + "(" + substringExpr + ");";
+        }
+
+        return "output.set" + capitalize(outputField) + "(" + convertValue(value) + ");";
+    }
+
+    private static String buildInputGetter(String resolvedValue, String iterator) {
+        String[] inputParts = resolvedValue.split("\\.");
+        StringBuilder inputGetter = new StringBuilder(iterator != null ? iterator : "input");
+        if (resolvedValue.contains("MRM")) {
+            for (int i = 2; i < inputParts.length - 1; i++) {
+                if (!inputParts[i].equals("MRM")) {
+                    inputGetter.append(".get").append(capitalize(inputParts[i].replace("*:", ""))).append("()");
+                }
+            }
+        } else if (inputParts.length > 3) {
+            inputGetter.append(".get").append(capitalize(inputParts[3].replace("*:", ""))).append("()");
+        }
+        inputGetter.append(".get").append(capitalize(inputParts[inputParts.length - 1].replace("*:", ""))).append("()");
+        return inputGetter.toString();
+    }
+
+    private static String resolveReference(String path, Map<String, String> references) {
+        if (references.containsKey(path)) {
+            return references.get(path);
+        }
+        for (Map.Entry<String, String> entry : references.entrySet()) {
+            if (path.startsWith(entry.getKey() + ".")) {
+                return entry.getValue() + path.substring(entry.getKey().length());
+            }
+        }
+        return path;
+    }
+
+    private static String extractCollectionName(String path, boolean isForLoop) {
+        String[] parts = path.split("\\.");
+        if (isForLoop) {
+            for (int i = parts.length - 1; i >= 0; i--) {
+                if (parts[i].startsWith("*:") && !parts[i].equals("*:item")) {
+                    return parts[i].replace("*:", "").toLowerCase();
+                }
+            }
+        } else {
+            for (int i = parts.length - 1; i >= 0; i--) {
+                if (parts[i].startsWith("*:") && !parts[i].matches("Item\\[.*?\\]")) {
+                    return parts[i].replace("*:", "").toLowerCase();
+                }
+            }
+        }
+        return parts[parts.length - 1].replace("*:", "").toLowerCase();
+    }
+
+    private static void processPath(String fullPath, Map<String, ClassStructure> classes, ClassStructure rootClass,
+            boolean isOutput, String value) {
+        String[] parts = fullPath.split("\\.");
+        if (parts.length < 4) {
+            return;
+        }
+
+        if (fullPath.contains("MRM")) {
+            processMrmPath(fullPath, classes, rootClass, isOutput, value);
+            return;
+        }
+
+        String fieldOrClassName = parts[3].replace("*:", "").toLowerCase();
+        if (parts.length == 4 && !fullPath.contains(".Item[")) {
+            String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldOrClassName, fullPath, value);
+            rootClass.addField(fieldOrClassName, type);
+        } else if (parts.length > 4 && parts[4].matches("Item\\[.*?\\]")) {
+            String collectionName = fieldOrClassName;
+            String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
+            rootClass.addField(collectionName, "List<" + itemClassName + ">");
+            classes.computeIfAbsent(itemClassName, ClassStructure::new);
+        }
+    }
+
+    private static void processMrmPath(String fullPath, Map<String, ClassStructure> classes, ClassStructure rootClass,
+            boolean isOutput, String value) {
+        String[] parts = fullPath.split("\\.");
+        ClassStructure currentClass = rootClass;
+        for (int i = 2; i < parts.length - 1; i++) {
+            if (!parts[i].equals("MRM")) {
+                String fieldName = parts[i].replace("*:", "").toLowerCase();
+                String nextClassName = capitalize(fieldName.replaceAll("s$", ""));
+                if (i == parts.length - 2 && !parts[i + 1].matches("Item\\[.*?\\]")) {
+                    String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
+                    currentClass.addField(fieldName, type);
+                } else {
+                    ClassStructure nestedClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
+                    currentClass.addField(fieldName, "List<" + nextClassName + ">");
+                    currentClass = nestedClass;
+                }
+            }
+        }
+        if (!parts[parts.length - 1].matches("Item\\[.*?\\]")) {
+            String fieldName = parts[parts.length - 1].replace("*:", "").toLowerCase();
+            String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
+            currentClass.addField(fieldName, type);
+        }
+    }
+
+    private static void generateModelClasses(Map<String, Object> parseResult) throws IOException {
+        Map<String, ClassStructure> classes = (Map<String, ClassStructure>) parseResult.get("classes");
+
+        for (ClassStructure cls : classes.values()) {
+            if (cls.name.isEmpty() || cls.fields.isEmpty()) continue;
+            StringBuilder content = new StringBuilder()
+                .append("package ").append(MODEL_PACKAGE).append(";\n\n")
+                .append("import lombok.Data;\n")
+                .append("import java.util.List;\n")
+                .append("import java.time.LocalDateTime;\n\n")
+                .append("@Data\n")
+                .append("public class ").append(cls.name).append(" {\n");
+
+            for (Map.Entry<String, String> field : cls.fields.entrySet()) {
+                content.append("    private ").append(field.getValue()).append(" ").append(field.getKey()).append(";\n");
+            }
+            content.append("}\n");
+            writeToFile(OUTPUT_DIR + cls.name + ".java", content.toString());
+        }
+    }
+
+    private static void generateMapperClass(Map<String, Object> parseResult) throws IOException {
+        List<String> logicBlocks = (List<String>) parseResult.get("logicBlocks");
+        Map<String, List<String>> procedureBlocks = (Map<String, List<String>>) parseResult.get("procedureBlocks");
+        Set<String> headerKeys = (Set<String>) parseResult.get("headerKeys");
+
+        StringBuilder mapper = new StringBuilder()
+            .append("package ").append(MAPPER_PACKAGE).append(";\n\n")
+            .append("import ").append(MODEL_PACKAGE).append(".*;\n")
+            .append("import java.util.*;\n")
+            .append("import java.util.stream.Collectors;\n")
+            .append("import java.util.stream.IntStream;\n")
+            .append("import java.time.LocalDateTime;\n")
+            .append("import java.time.format.DateTimeFormatter;\n\n")
+            .append("public class DataMapper {\n");
+
+        for (Map.Entry<String, List<String>> entry : procedureBlocks.entrySet()) {
+            String methodName = entry.getKey().substring(0, 1).toLowerCase() + entry.getKey().substring(1);
+            mapper.append("    private void ").append(methodName).append("(Input input, Output output, Map<String, String> headersMap) {\n");
+            for (String block : entry.getValue()) {
+                mapper.append("        ").append(block).append("\n");
+            }
+            mapper.append("    }\n\n");
+        }
+
+        mapper.append("    public Output map(Input input, Map<String, String> headers, String requestIdentifier) {\n")
+            .append("        Map<String, String> headersMap = new HashMap<>();\n");
+
+        for (String key : headerKeys) {
+            mapper.append("        headersMap.put(\"").append(key).append("\", headers.get(\"").append(key).append("\"));\n");
+        }
+
+        mapper.append("        Output output = new Output();\n");
+
+        for (String block : logicBlocks) {
+            mapper.append("        ").append(block).append("\n");
+        }
+
+        for (String procName : procedureBlocks.keySet()) {
+            String methodName = procName.substring(0, 1).toLowerCase() + procName.substring(1);
+            mapper.append("        ").append(methodName).append("(input, output, headersMap);\n");
+        }
+
+        mapper.append("        return output;\n")
+            .append("    }\n")
+            .append("}\n");
+
+        writeToFile(OUTPUT_DIR + "DataMapper.java", mapper.toString());
+    }
+
+    static class ClassStructure {
+        String name;
+        Map<String, String> fields = new LinkedHashMap<>();
+
+        ClassStructure(String name) {
+            this.name = name;
+        }
+
+        void addField(String name, String type) {
+            fields.putIfAbsent(name, type);
+        }
+    }
+
+    private static String determineFieldType(String fieldName, String fullPath, String value) {
+        if (value != null) {
+            if (fieldName.toLowerCase().contains("date") || fieldName.toLowerCase().contains("time")) {
+                return "LocalDateTime";
+            }
+            if (value.matches("'true'|'false'")) return "Boolean";
+            if (value.matches("\\d+")) return "Integer";
+            if (value.startsWith("'") && value.endsWith("'")) return "String";
+            if (!value.contains("InputRoot")) return "String";
+        }
+        return "String";
+    }
+
+    private static String capitalize(String str) {
+        if (str == null || str.isEmpty()) return str;
+        return str.substring(0, 1).toUpperCase() + str.substring(1);
+    }
+
+    private static String convertValue(String value) {
+        if (value.startsWith("'") && value.endsWith("'")) {
+            String val = value.substring(1, value.length - 1);
+            if ("true".equalsIgnoreCase(val) || "false".equalsIgnoreCase(val)) return val.toLowerCase();
+            return "\"" + val + "\"";
+        }
+        return value;
+    }
+
+    private static String applyCasting(String expression, String javaType) {
+        switch (javaType) {
+            case "Integer": return "Integer.parseInt(" + expression + ")";
+            case "Float": return "Float.parseFloat(" + expression + ")";
+            case "Double": return "Double.parseDouble(" + expression + ")";
+            case "Boolean": return "Boolean.parseBoolean(" + expression + ")";
+            case "String": return "String.valueOf(" + expression + ")";
+            default: return expression;
+        }
+    }
+
+    private static String convertLoopBody(String body, String iterator, String itemVar, Map<String, String> references) {
+        StringBuilder result = new StringBuilder();
+        Matcher matcher = LOOP_INDEX_PATTERN.matcher(body);
+        while (matcher.find()) {
+            String field = matcher.group(3).toLowerCase();
+            String value = matcher.group(4).trim();
+            String resolvedValue = resolveReference(value, references);
+
+            if (field.equals("httpcode") || field.equals("httpmessage") || field.equals("moreinformation")
+                    || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
+                    || resolvedValue.contains("moreInformation")) {
+                continue;
+            }
+
+            String setter;
+            Matcher castMatcher = CAST_PATTERN.matcher(value);
+            Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
+            if (coalesceMatcher.find()) {
+                String[] args = coalesceMatcher.group(1).split(",");
+                String coalesceValue = args[0].trim();
+                String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
+                String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
+                setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
+            } else if (castMatcher.find()) {
+                String castExpr = castMatcher.group(1).trim();
+                String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+                String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
+                setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
+            } else {
+                String inputGetter = buildInputGetter(resolvedValue, iterator);
+                setter = itemVar + ".set" + capitalize(field) + "(" + inputGetter + ");";
+            }
+            result.append("            ").append(setter).append("\n");
+        }
+        return result.toString();
+    }
+
+    private static String detectCounterVariable(String body, Map<String, String> variables) {
+        Matcher matcher = LOOP_INDEX_PATTERN.matcher(body);
+        while (matcher.find()) {
+            String indexVar = matcher.group(2);
+            if (variables.containsKey(indexVar)) {
+                return indexVar;
+            }
+        }
+        return null;
+    }
+
+    private static String extractOutputCollection(String body, Map<String, String> references, String inputCollectionName) {
+        Matcher matcher = LOOP_INDEX_PATTERN.matcher(body);
+        if (matcher.find()) {
+            String rawPath = matcher.group(1).trim();
+            String resolvedPath = resolveReference(rawPath, references);
+            if (!resolvedPath.startsWith("OutputRoot.JSON.Data.")) {
+                resolvedPath = "OutputRoot.JSON.Data." + resolvedPath;
+            }
+            return resolvedPath;
+        }
+        return "OutputRoot.JSON.Data." + inputCollectionName;
+    }
+
+    private static boolean isWithinProcedure(int position, Matcher procedureMatcher) {
+        procedureMatcher.reset();
+        while (procedureMatcher.find()) {
+            if (position >= procedureMatcher.start() && position <= procedureMatcher.end()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void writeToFile(String filePath, String content) throws IOException {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(filePath, StandardCharsets.UTF_8))) {
+            writer.write(content);
+        }
+    }
+
+    private static String convertDateFormat(String esqlFormat) {
+        return esqlFormat.replace("%Y", "yyyy").replace("%y", "yy").replace("%m", "MM").replace("%d", "dd")
+                .replace("%H", "HH").replace("%h", "hh").replace("%M", "mm").replace("%S", "ss")
+                .replace("%f", "SSS").replace("%a", "EEE").replace("%A", "EEEE").replace("%b", "MMM")
+                .replace("%B", "MMMM").replace("%p", "a").replace("%z", "Z").replace("%Z", "z");
+    }
 }
