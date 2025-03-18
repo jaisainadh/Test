@@ -636,4 +636,107 @@ public class EsqlToJavaConverter {
 			writer.write(content);
 		}
 	}
+
+	private static void processNestedLoop(String outerIterator, String outerCollectionPath, String body,
+			List<String> logicBlocks, Map<String, ClassStructure> classes, ClassStructure inputClass,
+			ClassStructure outputClass, Map<String, String> references) {
+		
+		Matcher nestedLoopMatcher = NESTED_LOOP_PATTERN.matcher(body);
+		if (!nestedLoopMatcher.find()) {
+			return;
+		}
+
+		String innerIterator = nestedLoopMatcher.group(3);
+		String innerCollectionPath = nestedLoopMatcher.group(4);
+		String innerBody = nestedLoopMatcher.group(5);
+		String outerBody = nestedLoopMatcher.group(6);
+
+		// Process outer collection
+		String outerCollectionName = extractCollectionName(outerCollectionPath, true);
+		String outerItemClassName = capitalize(outerCollectionName.replaceAll("s$", ""));
+		ClassStructure outerItemClass = classes.computeIfAbsent(outerItemClassName, ClassStructure::new);
+		inputClass.addField(outerCollectionName, "List<" + outerItemClassName + ">");
+
+		// Process inner collection
+		String innerCollectionName = extractCollectionName(innerCollectionPath, true);
+		String innerItemClassName = capitalize(innerCollectionName.replaceAll("s$", ""));
+		ClassStructure innerItemClass = classes.computeIfAbsent(innerItemClassName, ClassStructure::new);
+		outerItemClass.addField(innerCollectionName, "List<" + innerItemClassName + ">");
+
+		// Process output collections
+		String outerOutputPath = extractOutputCollection(outerBody, references, outerCollectionName);
+		String innerOutputPath = extractOutputCollection(innerBody, references, innerCollectionName);
+		String[] outerOutputParts = outerOutputPath.split("\\.");
+		String outerCollectionField = outerOutputParts[outerOutputParts.length - 1].toLowerCase();
+		outputClass.addField(outerCollectionField, "List<" + outerItemClassName + ">");
+
+		// Process inner loop body
+		Matcher innerBodyMatcher = Pattern.compile("SET\\s+([^=]+)\\.Item\\[(?:I|\\d+)\\]\\.(\\w+)\\s*=\\s*([^;]+);")
+				.matcher(innerBody);
+		while (innerBodyMatcher.find()) {
+			String fieldName = innerBodyMatcher.group(2).toLowerCase();
+			String value = innerBodyMatcher.group(3).trim();
+			String type = determineFieldType(fieldName, innerOutputPath, value);
+
+			if (fieldName.equals("httpcode") || fieldName.equals("httpmessage")
+					|| fieldName.equals("moreinformation")) {
+				continue;
+			}
+
+			Matcher castMatcher = CAST_PATTERN.matcher(value);
+			if (castMatcher.find()) {
+				type = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+			}
+			innerItemClass.addField(fieldName, type);
+		}
+
+		// Process outer loop body
+		Matcher outerBodyMatcher = Pattern.compile("SET\\s+([^=]+)\\.Item\\[(?:I|\\d+)\\]\\.(\\w+)\\s*=\\s*([^;]+);")
+				.matcher(outerBody);
+		while (outerBodyMatcher.find()) {
+			String fieldName = outerBodyMatcher.group(2).toLowerCase();
+			String value = outerBodyMatcher.group(3).trim();
+			String type = determineFieldType(fieldName, outerOutputPath, value);
+
+			if (fieldName.equals("httpcode") || fieldName.equals("httpmessage")
+					|| fieldName.equals("moreinformation")) {
+				continue;
+			}
+
+			Matcher castMatcher = CAST_PATTERN.matcher(value);
+			if (castMatcher.find()) {
+				type = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+			}
+			outerItemClass.addField(fieldName, type);
+		}
+
+		// Generate nested loop code
+		StringBuilder loop = new StringBuilder()
+			.append("List<").append(outerItemClassName).append("> ")
+			.append(outerCollectionField).append(" = new ArrayList<>();\n")
+			.append("if (input.get").append(capitalize(outerCollectionName)).append("() != null) {\n")
+			.append("    ").append(outerCollectionField)
+			.append(" = input.get").append(capitalize(outerCollectionName)).append("().stream()\n")
+			.append("        .map(").append(outerIterator).append(" -> {\n")
+			.append("            ").append(outerItemClassName).append(" outerItem = new ").append(outerItemClassName).append("();\n")
+			.append("            List<").append(innerItemClassName).append("> innerList = new ArrayList<>();\n")
+			.append("            if (").append(outerIterator).append(".get").append(capitalize(innerCollectionName)).append("() != null) {\n")
+			.append("                innerList = ").append(outerIterator).append(".get").append(capitalize(innerCollectionName)).append("().stream()\n")
+			.append("                    .map(").append(innerIterator).append(" -> {\n")
+			.append("                        ").append(innerItemClassName).append(" innerItem = new ").append(innerItemClassName).append("();\n")
+			.append(convertLoopBody(innerBody, innerIterator, "innerItem", references))
+			.append("                        return innerItem;\n")
+			.append("                    })\n")
+			.append("                    .collect(Collectors.toList());\n")
+			.append("            }\n")
+			.append("            outerItem.set").append(capitalize(innerCollectionName)).append("(innerList);\n")
+			.append(convertLoopBody(outerBody, outerIterator, "outerItem", references))
+			.append("            return outerItem;\n")
+			.append("        })\n")
+			.append("        .collect(Collectors.toList());\n")
+			.append("}\n")
+			.append("output.set").append(capitalize(outerCollectionField)).append("(").append(outerCollectionField).append(");");
+
+		logicBlocks.add(loop.toString());
+	}
 }
