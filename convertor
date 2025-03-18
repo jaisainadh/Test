@@ -356,7 +356,36 @@ public class EsqlToJavaConverter {
 			String dateExpr = dateMatcher.group(1);
 			String format = dateMatcher.group(2);
 			String javaFormat = convertDateFormat(format);
-			String dateValue = convertValue(dateExpr);
+			
+			// Resolve the date expression value
+			String resolvedDateExpr = resolveReference(dateExpr, references);
+			String dateValue;
+			
+			if (resolvedDateExpr.startsWith("InputRoot")) {
+				// Handle InputRoot reference
+				String[] parts = resolvedDateExpr.split("\\.");
+				StringBuilder inputGetter = new StringBuilder("input");
+				
+				// Handle MRM paths
+				if (resolvedDateExpr.contains("MRM")) {
+					for (int i = 2; i < parts.length - 1; i++) {
+						if (!parts[i].equals("MRM")) {
+							inputGetter.append(".get").append(capitalize(parts[i].replace("*:", ""))).append("()");
+						}
+					}
+				} else {
+					// Handle other paths
+					if (parts.length > 3) {
+						inputGetter.append(".get").append(capitalize(parts[3].replace("*:", ""))).append("()");
+					}
+				}
+				
+				inputGetter.append(".get").append(capitalize(parts[parts.length - 1].replace("*:", ""))).append("()");
+				dateValue = inputGetter.toString();
+			} else {
+				// Handle direct value or other references
+				dateValue = convertValue(resolvedDateExpr);
+			}
 			
 			// Generate code to parse and format the date
 			StringBuilder dateCode = new StringBuilder();
@@ -431,11 +460,18 @@ public class EsqlToJavaConverter {
 	}
 
 	private static String resolveReference(String path, Map<String, String> references) {
-		for (Map.Entry<String, String> entry : references.entrySet()) {
-			if (path.equals(entry.getKey()) || path.startsWith(entry.getKey() + ".")) {
-				return entry.getValue() + path.substring(entry.getKey().length());
-            }
+		// First check if the path is a direct reference
+		if (references.containsKey(path)) {
+			return references.get(path);
 		}
+		
+		// Then check if the path starts with any reference
+		for (Map.Entry<String, String> entry : references.entrySet()) {
+			if (path.startsWith(entry.getKey() + ".")) {
+				return entry.getValue() + path.substring(entry.getKey().length());
+			}
+		}
+		
 		return path;
 	}
 
