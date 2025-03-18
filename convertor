@@ -357,8 +357,16 @@ public class EsqlToJavaConverter {
 			String format = dateMatcher.group(2);
 			String javaFormat = convertDateFormat(format);
 			String dateValue = convertValue(dateExpr);
-			return "output.set" + capitalize(outputField) + 
-				   "(DateTimeFormatter.ofPattern(\"" + javaFormat + "\").format(" + dateValue + "));";
+			
+			// Generate code to parse and format the date
+			StringBuilder dateCode = new StringBuilder();
+			dateCode.append("LocalDateTime.parse(")
+					.append(dateValue)
+					.append(", DateTimeFormatter.ofPattern(\"")
+					.append(javaFormat)
+					.append("\"))");
+			
+			return "output.set" + capitalize(outputField) + "(" + dateCode.toString() + ");";
 		}
 
 		headerMatcher.reset(value);
@@ -551,9 +559,15 @@ public class EsqlToJavaConverter {
 		Map<String, List<String>> procedureBlocks = (Map<String, List<String>>) parseResult.get("procedureBlocks");
 		Set<String> headerKeys = (Set<String>) parseResult.get("headerKeys");
 
-		StringBuilder mapper = new StringBuilder().append("package ").append(MAPPER_PACKAGE).append(";\n\n")
-				.append("import ").append(MODEL_PACKAGE).append(".*;\n").append("import java.util.*;\n")
-				.append("import java.util.stream.Collectors;\n\n").append("public class DataMapper {\n");
+		StringBuilder mapper = new StringBuilder()
+			.append("package ").append(MAPPER_PACKAGE).append(";\n\n")
+			.append("import ").append(MODEL_PACKAGE).append(".*;\n")
+			.append("import java.util.*;\n")
+			.append("import java.util.stream.Collectors;\n")
+			.append("import java.time.LocalDateTime;\n")
+			.append("import java.time.format.DateTimeFormatter;\n")
+			.append("import java.time.format.DateTimeParseException;\n\n")
+			.append("public class DataMapper {\n");
 
 		for (Map.Entry<String, List<String>> entry : procedureBlocks.entrySet()) {
 			String methodName = entry.getKey().substring(0, 1).toLowerCase() + entry.getKey().substring(1);
@@ -604,15 +618,24 @@ public class EsqlToJavaConverter {
 
 	private static String determineFieldType(String fieldName, String fullPath, String value) {
 		if (value != null) {
-			if (value.matches("'true'|'false'"))
+			// Check for date fields
+			if (fieldName.toLowerCase().contains("date") || fieldName.toLowerCase().contains("time")) {
+				return "LocalDateTime";
+			}
+			
+			if (value.matches("'true'|'false'")) {
 				return "Boolean";
-			if (value.matches("\\d+"))
+			}
+			if (value.matches("\\d+")) {
 				return "Integer";
-			if (value.startsWith("'") && value.endsWith("'"))
+			}
+			if (value.startsWith("'") && value.endsWith("'")) {
 				return "String";
-			if (!value.contains("InputRoot"))
+			}
+			if (!value.contains("InputRoot")) {
 				return "String";
-        }
+			}
+		}
 		return "String";
 	}
 
@@ -816,5 +839,25 @@ public class EsqlToJavaConverter {
 			.append("output.set").append(capitalize(outerCollectionField)).append("(").append(outerCollectionField).append(");");
 
 		logicBlocks.add(loop.toString());
+	}
+
+	private static String convertDateFormat(String esqlFormat) {
+		// Convert ESQL date format to Java DateTimeFormatter format
+		return esqlFormat.replace("%Y", "yyyy")  // Year with century
+						.replace("%y", "yy")      // Year without century
+						.replace("%m", "MM")      // Month (01-12)
+						.replace("%d", "dd")      // Day of month (01-31)
+						.replace("%H", "HH")      // Hour (00-23)
+						.replace("%h", "hh")      // Hour (01-12)
+						.replace("%M", "mm")      // Minute (00-59)
+						.replace("%S", "ss")      // Second (00-59)
+						.replace("%f", "SSS")     // Millisecond (000-999)
+						.replace("%a", "EEE")     // Abbreviated weekday name
+						.replace("%A", "EEEE")    // Full weekday name
+						.replace("%b", "MMM")     // Abbreviated month name
+						.replace("%B", "MMMM")    // Full month name
+						.replace("%p", "a")       // AM/PM marker
+						.replace("%z", "Z")       // Time zone offset
+						.replace("%Z", "z");      // Time zone name
 	}
 }
