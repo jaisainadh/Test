@@ -37,8 +37,9 @@ public class EsqlToJavaConverter {
 	private static final Pattern ASSIGNMENT_PATTERN = Pattern.compile("SET\\s+([^=]+)\\s*=\\s*([^;]+);",
 			Pattern.DOTALL);
 	private static final Pattern INPUT_PATTERN = Pattern.compile(
-			"(InputRoot\\.(?:JSON\\.Data|XML|XMLNSC)(?:\\.\\*:?\\w+)*(?:\\.Item\\[.*?\\])?)\\.([\\w*:]+)",
-			Pattern.DOTALL);
+			"(InputRoot\\.(?:JSON\\.Data|XML|XMLNSC|MRM)(?:\\.\\*:?\\w+)*(?:\\.Item\\[.*?\\])?)\\.([\\w*:]+)",
+			Pattern.DOTALL
+	);
 	private static final Pattern HEADER_PATTERN = Pattern.compile("([^\\.]+)\\.\"([^\"]+)\"", Pattern.DOTALL);
 	private static final Pattern CAST_PATTERN = Pattern.compile("CAST\\(([^)]+)\\s+AS\\s+(\\w+)\\)", Pattern.DOTALL);
 	private static final Pattern COALESCE_PATTERN = Pattern.compile("COALESCE\\(([^,]+(?:,[^,]+)*)\\)", Pattern.DOTALL);
@@ -349,6 +350,17 @@ public class EsqlToJavaConverter {
 
 	private static String generateSetter(String outputField, String value, Map<String, String> references,
 			String castType, String coalesceValue, String defaultValue, Matcher headerMatcher) {
+		// Handle date format
+		Matcher dateMatcher = DATE_PATTERN.matcher(value);
+		if (dateMatcher.find()) {
+			String dateExpr = dateMatcher.group(1);
+			String format = dateMatcher.group(2);
+			String javaFormat = convertDateFormat(format);
+			String dateValue = convertValue(dateExpr);
+			return "output.set" + capitalize(outputField) + 
+				   "(DateTimeFormatter.ofPattern(\"" + javaFormat + "\").format(" + dateValue + "));";
+		}
+
 		headerMatcher.reset(value);
 		if (headerMatcher.find() && references.containsKey(headerMatcher.group(1))
 				&& references.get(headerMatcher.group(1)).contains("HTTPRequestHeader")) {
@@ -361,9 +373,23 @@ public class EsqlToJavaConverter {
 		if (inputMatcher.find()) {
 			String[] inputParts = resolvedValue.split("\\.");
 			String inputField = inputParts[inputParts.length - 1].replace("*:", "").toLowerCase();
-			String inputGetter = "input"
-					+ (inputParts.length > 3 ? ".get" + capitalize(inputParts[3].replace("*:", "")) + "()" : "")
-					+ ".get" + capitalize(inputField) + "()";
+			StringBuilder inputGetter = new StringBuilder("input");
+			
+			// Handle MRM paths
+			if (resolvedValue.contains("MRM")) {
+				for (int i = 2; i < inputParts.length - 1; i++) {
+					if (!inputParts[i].equals("MRM")) {
+						inputGetter.append(".get").append(capitalize(inputParts[i].replace("*:", ""))).append("()");
+					}
+				}
+			} else {
+				// Handle other paths
+				if (inputParts.length > 3) {
+					inputGetter.append(".get").append(capitalize(inputParts[3].replace("*:", ""))).append("()");
+				}
+			}
+			
+			inputGetter.append(".get").append(capitalize(inputField)).append("()");
 
 			if (coalesceValue != null) {
 				String coalesceExpression = "Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + ")";
@@ -372,7 +398,7 @@ public class EsqlToJavaConverter {
 				}
 				return "output.set" + capitalize(outputField) + "(" + coalesceExpression + ");";
 			} else if (castType != null) {
-				String castExpression = applyCasting(inputGetter, castType);
+				String castExpression = applyCasting(inputGetter.toString(), castType);
 				return "output.set" + capitalize(outputField) + "(" + castExpression + ");";
 			} else {
 				return "output.set" + capitalize(outputField) + "(" + inputGetter + ");";
@@ -432,6 +458,19 @@ public class EsqlToJavaConverter {
 			return;
 		}
 
+		// Handle MRM paths
+		if (fullPath.contains("MRM")) {
+			processMrmPath(fullPath, classes, rootClass, isOutput, value);
+			return;
+		}
+
+		// Handle XMLNSC paths
+		if (fullPath.contains("XMLNSC")) {
+			processXmlnscPath(fullPath, classes, rootClass, isOutput, value);
+			return;
+		}
+
+		// Handle wildcards and regular paths
 		String fieldOrClassName = parts[3].replace("*:", "").toLowerCase();
 		if (parts.length == 4 && !fullPath.contains(".Item[")) {
 			String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value
@@ -448,6 +487,45 @@ public class EsqlToJavaConverter {
 			rootClass.addField(fieldOrClassName, "List<" + nestedClassName + ">"); // Assume list for loops
         }
     }
+
+	private static void processMrmPath(String fullPath, Map<String, ClassStructure> classes,
+			ClassStructure rootClass, boolean isOutput, String value) {
+		String[] parts = fullPath.split("\\.");
+		StringBuilder currentPath = new StringBuilder();
+		ClassStructure currentClass = rootClass;
+
+		// Skip InputRoot.MRM
+		for (int i = 2; i < parts.length; i++) {
+			String part = parts[i];
+			if (part.equals("MRM")) {
+				continue;
+			}
+			
+			if (part.startsWith("*:")) {
+				part = part.substring(2);
+			}
+			
+			currentPath.append(part);
+			if (i < parts.length - 1 && !parts[i + 1].matches("Item\\[.*?\\]")) {
+				String className = capitalize(part);
+				ClassStructure nestedClass = classes.computeIfAbsent(className, ClassStructure::new);
+				currentClass.addField(part.toLowerCase(), "List<" + className + ">");
+				currentClass = nestedClass;
+			} else if (i == parts.length - 1) {
+				String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value
+						: determineFieldType(part.toLowerCase(), fullPath, value);
+				currentClass.addField(part.toLowerCase(), type);
+			}
+		}
+	}
+
+	private static void processXmlnscPath(String fullPath, Map<String, ClassStructure> classes,
+			ClassStructure rootClass, boolean isOutput, String value) {
+		String[] parts = fullPath.split("\\.");
+		String nestedClassName = capitalize(parts[3].replace("*:", "").toLowerCase());
+		ClassStructure nestedClass = classes.computeIfAbsent(nestedClassName, ClassStructure::new);
+		rootClass.addField(parts[3].replace("*:", "").toLowerCase(), "List<" + nestedClassName + ">");
+	}
 
 	private static void generateModelClasses(Map<String, Object> parseResult) throws IOException {
 		Map<String, ClassStructure> classes = (Map<String, ClassStructure>) parseResult.get("classes");
