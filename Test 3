@@ -1,1 +1,267 @@
+private static String convertLoopBodyWithCounter(String body, String iterator, String itemVar, String counterVar,
+        Map<String, String> references, Map<String, String> variables, Map<String, ClassStructure> classes, int nestingLevel) {
+    StringBuilder result = new StringBuilder();
+    int lastPos = 0;
 
+    Matcher setMatcher = LOOP_INDEX_PATTERN.matcher(body);
+    Matcher ifMatcher = IF_PATTERN.matcher(body);
+    Matcher forMatcher = FOR_PATTERN.matcher(body);
+
+    while (lastPos < body.length()) {
+        int nextSetPos = setMatcher.find(lastPos) ? setMatcher.start() : Integer.MAX_VALUE;
+        int nextIfPos = ifMatcher.find(lastPos) ? ifMatcher.start() : Integer.MAX_VALUE;
+        int nextForPos = forMatcher.find(lastPos) ? forMatcher.start() : Integer.MAX_VALUE;
+
+        if (nextSetPos == Integer.MAX_VALUE && nextIfPos == Integer.MAX_VALUE && nextForPos == Integer.MAX_VALUE) {
+            break;
+        }
+
+        int nextPos = Math.min(nextSetPos, Math.min(nextIfPos, nextForPos));
+
+        if (nextPos == nextSetPos) {
+            String field = setMatcher.group(3).toLowerCase();
+            String value = setMatcher.group(4).trim();
+            String resolvedValue = resolveReference(value, references);
+
+            if (field.equals("httpcode") || field.equals("httpmessage") || field.equals("moreinformation")
+                    || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
+                    || resolvedValue.contains("moreInformation")) {
+                lastPos = setMatcher.end();
+                continue;
+            }
+
+            String setter;
+            Matcher castMatcher = CAST_PATTERN.matcher(value);
+            Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
+            Matcher dateMatcher = DATE_PATTERN.matcher(value);
+            if (coalesceMatcher.find()) {
+                String[] args = coalesceMatcher.group(1).split(",");
+                String coalesceValue = args[0].trim();
+                String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
+                String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
+                setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
+            } else if (castMatcher.find()) {
+                String castExpr = castMatcher.group(1).trim();
+                String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+                String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
+                setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
+            } else if (dateMatcher.find()) {
+                String dateExpr = dateMatcher.group(1);
+                String format = dateMatcher.group(2);
+                String javaFormat = convertDateFormat(format);
+                String resolvedDateExpr = resolveReference(dateExpr, references);
+                String dateValue = resolvedDateExpr.contains("InputRoot") ? buildInputGetter(resolvedDateExpr, iterator) : convertValue(resolvedDateExpr);
+                setter = itemVar + ".set" + capitalize(field) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
+            } else {
+                String inputGetter = buildInputGetter(resolvedValue, iterator);
+                setter = itemVar + ".set" + capitalize(field) + "(" + inputGetter + ");";
+            }
+            result.append("        ").append(setter).append("\n");
+            lastPos = setMatcher.end();
+        } else if (nextPos == nextIfPos) {
+            String condition = ifMatcher.group(1).trim();
+            String thenBlock = ifMatcher.group(2).trim();
+            String elseBlock = ifMatcher.group(3) != null ? ifMatcher.group(3).trim() : null;
+
+            String resolvedCondition = resolveReference(condition, references);
+            String conditionExpr = convertCondition(resolvedCondition, iterator, references);
+
+            StringBuilder ifBlock = new StringBuilder();
+            ifBlock.append("        if (").append(conditionExpr).append(") {\n");
+
+            Matcher thenSetter = LOOP_INDEX_PATTERN.matcher(thenBlock);
+            while (thenSetter.find()) {
+                String field = thenSetter.group(3).toLowerCase();
+                String value = thenSetter.group(4).trim();
+                String resolvedValue = resolveReference(value, references);
+
+                if (field.equals("httpcode") || field.equals("httpmessage") || field.equals("moreinformation")
+                        || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
+                        || resolvedValue.contains("moreInformation")) {
+                    continue;
+                }
+
+                String setter;
+                Matcher castMatcher = CAST_PATTERN.matcher(value);
+                Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
+                if (coalesceMatcher.find()) {
+                    String[] args = coalesceMatcher.group(1).split(",");
+                    String coalesceValue = args[0].trim();
+                    String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
+                    String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
+                    setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
+                } else if (castMatcher.find()) {
+                    String castExpr = castMatcher.group(1).trim();
+                    String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+                    String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
+                    setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
+                } else {
+                    String inputGetter = buildInputGetter(resolvedValue, iterator);
+                    setter = itemVar + ".set" + capitalize(field) + "(" + convertValue(resolvedValue) + ");";
+                }
+                ifBlock.append("            ").append(setter).append("\n");
+            }
+
+            if (elseBlock != null) {
+                ifBlock.append("        } else {\n");
+                Matcher elseSetter = LOOP_INDEX_PATTERN.matcher(elseBlock);
+                while (elseSetter.find()) {
+                    String field = elseSetter.group(3).toLowerCase();
+                    String value = elseSetter.group(4).trim();
+                    String resolvedValue = resolveReference(value, references);
+
+                    if (field.equals("httpcode") || field.equals("httpmessage") || field.equals("moreinformation")
+                            || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
+                            || resolvedValue.contains("moreInformation")) {
+                        continue;
+                    }
+
+                    String setter;
+                    Matcher castMatcher = CAST_PATTERN.matcher(value);
+                    Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
+                    if (coalesceMatcher.find()) {
+                        String[] args = coalesceMatcher.group(1).split(",");
+                        String coalesceValue = args[0].trim();
+                        String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
+                        String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
+                        setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
+                    } else if (castMatcher.find()) {
+                        String castExpr = castMatcher.group(1).trim();
+                        String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+                        String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
+                        setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
+                    } else {
+                        String inputGetter = buildInputGetter(resolvedValue, iterator);
+                        setter = itemVar + ".set" + capitalize(field) + "(" + convertValue(resolvedValue) + ");";
+                    }
+                    ifBlock.append("            ").append(setter).append("\n");
+                }
+            }
+            ifBlock.append("        }\n");
+
+            result.append(ifBlock);
+            lastPos = ifMatcher.end();
+        } else if (nextPos == nextForPos) {
+            List<String> nestedLoopBlocks = new ArrayList<>();
+            processForLoop(forMatcher.group(1), forMatcher.group(2), forMatcher.group(3), nestedLoopBlocks, classes,
+                    references, variables, nestingLevel + 1);
+            for (String block : nestedLoopBlocks) {
+                result.append("        ").append(block.replace("\n", "\n        ")).append("\n");
+            }
+            lastPos = forMatcher.end();
+        }
+    }
+
+    return result.toString();
+}2. Update Calls to convertLoopBodyWithCounterIn processForLoop: The processForLoop method already has classes and nestingLevel as parameters, so we just need to pass them to convertLoopBodyWithCounter:private static void processForLoop(String iterator, String collectionPath, String body, List<String> logicBlocks,
+        Map<String, ClassStructure> classes, Map<String, String> references, Map<String, String> variables, int nestingLevel) {
+    if (body.contains("httpCode") || body.contains("httpMessage") || body.contains("moreInformation")) {
+        return;
+    }
+
+    String resolvedCollectionPath = resolveReference(collectionPath, references);
+    String fullCollectionPath = resolvedCollectionPath.startsWith("InputRoot") ? resolvedCollectionPath
+            : "InputRoot.JSON.Data." + resolvedCollectionPath;
+    String collectionName = extractCollectionName(fullCollectionPath, true);
+    String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
+    ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
+
+    ClassStructure parentClass = nestingLevel == 0 ? inputClass : classes.get(capitalize(extractCollectionName(resolveReference(collectionPath.split("\\.")[0], references), true).replaceAll("s$", "")));
+    parentClass.addField(collectionName, "List<" + itemClassName + ">");
+
+    String outputCollectionPath = extractOutputCollection(body, references, collectionName);
+    String[] outputParts = outputCollectionPath.split("\\.");
+    String collectionField = outputParts[outputParts.length - 1].toLowerCase();
+
+    Matcher bodyMatcher = LOOP_INDEX_PATTERN.matcher(body);
+    while (bodyMatcher.find()) {
+        String fieldName = bodyMatcher.group(3).toLowerCase();
+        String value = bodyMatcher.group(4).trim();
+        String type = determineFieldType(fieldName, outputCollectionPath, value);
+        if (!fieldName.equals("httpcode") && !fieldName.equals("httpmessage") && !fieldName.equals("moreinformation")) {
+            Matcher castMatcher = CAST_PATTERN.matcher(value);
+            if (castMatcher.find()) {
+                type = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+            }
+            itemClass.addField(fieldName, type);
+        }
+    }
+
+    if (nestingLevel == 0) {
+        outputClass.addField(collectionField, "List<" + itemClassName + ">");
+    }
+
+    StringBuilder loop = new StringBuilder();
+    String indent = "    ".repeat(nestingLevel + 1);
+    String counterVar = detectCounterVariable(body, variables);
+    String counterStart = counterVar != null && variables.containsKey(counterVar) ? variables.get(counterVar).split(":")[1] : "0";
+
+    loop.append(indent).append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
+        .append(indent).append("if (").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("() != null) {\n")
+        .append(indent).append("    int ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = ").append(counterStart).append(";\n")
+        .append(indent).append("    for (").append(itemClassName).append(" ").append(iterator).append(" : ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("()) {\n")
+        .append(indent).append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
+        .append(convertLoopBodyWithCounter(body, iterator, "outputItem", counterVar, references, variables, classes, nestingLevel))
+        .append(indent).append("        ").append(collectionField).append(".add(outputItem);\n")
+        .append(indent).append("        ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append("++;\n")
+        .append(indent).append("    }\n")
+        .append(indent).append("}\n");
+
+    if (nestingLevel == 0) {
+        loop.append(indent).append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+    }
+
+    logicBlocks.add(loop.toString());
+}In processWhileLoop: The processWhileLoop method also has classes as a parameter, but nestingLevel isn’t explicitly defined here. Since this is a top-level loop, we can pass 0 for nestingLevel:private static void processWhileLoop(String refName, String body, String priorContent, List<String> logicBlocks,
+        Map<String, ClassStructure> classes, Map<String, String> references, Map<String, String> variables) {
+    if (body.contains("httpCode") || body.contains("httpMessage") || body.contains("moreInformation")) {
+        return;
+    }
+
+    String refPath = references.getOrDefault(refName, "");
+    if (!refPath.matches("InputRoot\\.(XML|XMLNSC|MRM|DFDL|JSON\\.Data)(?:\\.\\*:?\\w+)*")) return;
+
+    String collectionName = extractCollectionName(refPath, false);
+    String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
+    ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
+
+    inputClass.addField(collectionName, "List<" + itemClassName + ">");
+
+    String outputCollectionPath = extractOutputCollection(body, references, collectionName);
+    String[] outputParts = outputCollectionPath.split("\\.");
+    String collectionField = outputParts[outputParts.length - 1].toLowerCase();
+
+    Matcher bodyMatcher = LOOP_INDEX_PATTERN.matcher(body);
+    while (bodyMatcher.find()) {
+        String fieldName = bodyMatcher.group(3).toLowerCase();
+        String value = bodyMatcher.group(4).trim();
+        String type = determineFieldType(fieldName, outputCollectionPath, value);
+        if (!fieldName.equals("httpcode") && !fieldName.equals("httpmessage") && !fieldName.equals("moreinformation")) {
+            Matcher castMatcher = CAST_PATTERN.matcher(value);
+            if (castMatcher.find()) {
+                type = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+            }
+            itemClass.addField(fieldName, type);
+        }
+    }
+
+    outputClass.addField(collectionField, "List<" + itemClassName + ">");
+
+    StringBuilder loop = new StringBuilder();
+    String counterVar = detectCounterVariable(body, variables);
+    String counterStart = counterVar != null && variables.containsKey(counterVar) ? variables.get(counterVar).split(":")[1] : "0";
+
+    loop.append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
+        .append("int ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = ").append(counterStart).append(";\n")
+        .append("if (input.get").append(capitalize(collectionName)).append("() != null) {\n")
+        .append("    for (").append(itemClassName).append(" ").append(refName.toLowerCase()).append(" : input.get").append(capitalize(collectionName)).append("()) {\n")
+        .append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
+        .append(convertLoopBodyWithCounter(body, refName.toLowerCase(), "outputItem", counterVar, references, variables, classes, 0))
+        .append("        ").append(collectionField).append(".add(outputItem);\n")
+        .append("        ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append("++;\n")
+        .append("    }\n")
+        .append("}\n")
+        .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+
+    logicBlocks.add(loop.toString());
+}
