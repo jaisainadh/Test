@@ -1,1 +1,453 @@
+Below, I’ll provide a comprehensive set of AI prompts that cover the full conversion process for the ESQL-to-Java converter, as we did with the `EsqlToJavaConverter.java` script. These prompts are designed to guide an AI through the entire process, from understanding the requirements to generating the complete converter script, handling all ESQL features (e.g., SET, DECLARE, FOR, WHILE, CAST, COALESCE, CREATE LASTCHILD, etc.), and addressing edge cases like nested paths, redundant initialization, and proper field naming. The prompts will also include steps for testing and debugging the generated code.
 
+The goal is to create a single, robust converter that can handle the full range of ESQL constructs and produce clean, efficient Java code. I’ll break this down into a series of detailed prompts that build on each other to ensure the AI produces a complete solution.
+
+---
+
+### Prompt 1: Define the Full Scope of the ESQL-to-Java Conversion
+This prompt sets the stage by defining the requirements, scope, and expected output for the entire conversion process.
+
+**Prompt:**
+```
+I need a Java program that converts an ESQL script (used in IBM Integration Bus) to Java code. The ESQL script manipulates message structures (e.g., InputRoot, OutputRoot, Environment) using statements like CREATE, DECLARE, SET, FOR, WHILE, CAST, COALESCE, and more. The goal is to generate Java model classes and a mapper class that maps input data to output data. Here’s a comprehensive ESQL script example that includes various constructs:
+
+```
+DECLARE I INTEGER 1;
+DECLARE OutBodyRef REFERENCE TO OutputRoot.MRM;
+
+CREATE LASTCHILD OF OutputRoot.MRM DOMAIN('MRM');
+
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_BUF_TYP_ID = CAST(1 AS INTEGER);
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_USRID = COALESCE(InputRoot.JSON.Data.userId, 'defaultUser');
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_TRN_ID = 'W038';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_OBJ_CD = 'BNF';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_SRV_CD = 'ADR';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_ACN_CD = 'V';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_BUF_CNT = 0;
+
+CREATE LASTCHILD OF OutBodyRef.ReqDataAdrBuf;
+
+SET OutBodyRef.ReqDataAdrBuf.REQ_DATA_BNF_ID = 'someValue';
+
+FOR item AS InputRoot.JSON.Data.items[] DO
+    SET OutBodyRef.items[I].name = item.name;
+    SET I = I + 1;
+END FOR;
+
+DECLARE cursor REFERENCE TO InputRoot.XMLNSC.records;
+MOVE cursor FIRSTCHILD;
+WHILE LASTMOVE(cursor) DO
+    SET OutBodyRef.records[I].value = cursor.value;
+    SET I = I + 1;
+    MOVE cursor NEXTSIBLING;
+END WHILE;
+```
+
+Requirements:
+1. **Parse the ESQL Script**:
+   - Use regular expressions to parse ESQL statements like DECLARE, SET, FOR, WHILE, CAST, COALESCE, CREATE LASTCHILD, CREATE FIELD, MOVE, etc.
+   - Resolve references (e.g., `OutBodyRef` to `OutputRoot.MRM`).
+   - Handle nested paths (e.g., `OutputRoot.MRM.ReqTrnBuf`).
+
+2. **Generate Java Model Classes**:
+   - Create classes for each path segment (e.g., `Output`, `Mrm`, `Reqtrnbuf`, `Reqdataadrbuf`, `Input`, `Item`, `Items`, `Records`).
+   - Place classes in the package `com.example.model`.
+   - Use Lombok's `@Data` annotation for getters, setters, and other boilerplate.
+   - Add fields with appropriate Java types (e.g., `Integer` for numbers, `String` for text, `List` for arrays).
+   - Convert ESQL field names to Java camelCase (e.g., `REQ_TRN_BUF_TYP_ID` to `reqTrnBufTypId`).
+
+3. **Generate a Mapper Class**:
+   - Create `DataMapper.java` in the package `com.example.mapper`.
+   - Include a method `public Output map(Input input, Map<String, String> headers, String requestIdentifier)`.
+   - Map ESQL SET statements to Java setter calls (e.g., `output.getMrm().getReqtrnbuf().setReqTrnBufTypId(1)`).
+   - Handle nested paths correctly.
+   - Initialize nested objects only once using a global `Set<String>` to track initialized paths.
+   - Support CAST (e.g., `CAST(1 AS INTEGER)` to `Integer.parseInt("1")`).
+   - Support COALESCE (e.g., `COALESCE(input.getUserId(), "defaultUser")` using `Optional.ofNullable`).
+   - Convert FOR and WHILE loops to Java `for` loops.
+
+4. **Handle Edge Cases**:
+   - Support array indexing (e.g., `items[I]`).
+   - Handle headers (e.g., `Environment.HTTPRequestHeader."content-type"`).
+   - Support date/time fields (e.g., `LocalDateTime` for date fields).
+   - Avoid redundant `if` checks for object initialization.
+
+5. **Output**:
+   - Write generated files to a `generated/` directory.
+   - Ensure the code is clean, follows Java conventions, and is free of syntax errors.
+
+Provide a detailed plan for building this converter, including:
+- How to parse each ESQL statement.
+- How to generate model classes.
+- How to generate the mapper class.
+- How to handle edge cases like loops, CAST, COALESCE, and nested paths.
+```
+
+---
+
+### Prompt 2: Parse the ESQL Script and Build the Model Classes
+This prompt focuses on parsing the ESQL script and generating the model classes for all paths and fields.
+
+**Prompt:**
+```
+Using the following ESQL script:
+
+```
+DECLARE I INTEGER 1;
+DECLARE OutBodyRef REFERENCE TO OutputRoot.MRM;
+
+CREATE LASTCHILD OF OutputRoot.MRM DOMAIN('MRM');
+
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_BUF_TYP_ID = CAST(1 AS INTEGER);
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_USRID = COALESCE(InputRoot.JSON.Data.userId, 'defaultUser');
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_TRN_ID = 'W038';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_OBJ_CD = 'BNF';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_SRV_CD = 'ADR';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_ACN_CD = 'V';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_BUF_CNT = 0;
+
+CREATE LASTCHILD OF OutBodyRef.ReqDataAdrBuf;
+
+SET OutBodyRef.ReqDataAdrBuf.REQ_DATA_BNF_ID = 'someValue';
+
+FOR item AS InputRoot.JSON.Data.items[] DO
+    SET OutBodyRef.items[I].name = item.name;
+    SET I = I + 1;
+END FOR;
+
+DECLARE cursor REFERENCE TO InputRoot.XMLNSC.records;
+MOVE cursor FIRSTCHILD;
+WHILE LASTMOVE(cursor) DO
+    SET OutBodyRef.records[I].value = cursor.value;
+    SET I = I + 1;
+    MOVE cursor NEXTSIBLING;
+END WHILE;
+```
+
+I need to generate Java model classes for all paths in the ESQL script. The model classes should:
+- Be in the package `com.example.model`.
+- Use Lombok's `@Data` annotation.
+- Have fields with appropriate Java types (e.g., `Integer` for numbers, `String` for text, `List` for arrays).
+- Follow Java naming conventions (e.g., `ReqTrnBuf` to `Reqtrnbuf`, `REQ_TRN_BUF_TYP_ID` to `reqTrnBufTypId`).
+
+Steps:
+1. Parse the ESQL script to identify all paths (e.g., `OutputRoot.MRM.ReqTrnBuf`, `InputRoot.JSON.Data.items`, `InputRoot.XMLNSC.records`).
+2. Resolve references (e.g., `OutBodyRef` to `OutputRoot.MRM`).
+3. Create a class for each path segment (e.g., `Output`, `Mrm`, `Reqtrnbuf`, `Reqdataadrbuf`, `Input`, `Item`, `Items`, `Records`).
+4. Add fields to the classes based on SET statements and loop structures (e.g., `REQ_TRN_BUF_TYP_ID` as `reqTrnBufTypId` in `Reqtrnbuf`, `name` in `Items`).
+5. Generate the Java code for each class.
+
+Provide the Java code for the model classes (`Output.java`, `Mrm.java`, `Reqtrnbuf.java`, `Reqdataadrbuf.java`, `Input.java`, `Item.java`, `Items.java`, `Records.java`).
+```
+
+---
+
+### Prompt 3: Generate the Mapper Class with Full ESQL Support
+This prompt focuses on generating the `DataMapper.java` class to handle all ESQL constructs.
+
+**Prompt:**
+```
+Using the following ESQL script:
+
+```
+DECLARE I INTEGER 1;
+DECLARE OutBodyRef REFERENCE TO OutputRoot.MRM;
+
+CREATE LASTCHILD OF OutputRoot.MRM DOMAIN('MRM');
+
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_BUF_TYP_ID = CAST(1 AS INTEGER);
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_USRID = COALESCE(InputRoot.JSON.Data.userId, 'defaultUser');
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_TRN_ID = 'W038';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_OBJ_CD = 'BNF';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_SRV_CD = 'ADR';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_ACN_CD = 'V';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_BUF_CNT = 0;
+
+CREATE LASTCHILD OF OutBodyRef.ReqDataAdrBuf;
+
+SET OutBodyRef.ReqDataAdrBuf.REQ_DATA_BNF_ID = 'someValue';
+
+FOR item AS InputRoot.JSON.Data.items[] DO
+    SET OutBodyRef.items[I].name = item.name;
+    SET I = I + 1;
+END FOR;
+
+DECLARE cursor REFERENCE TO InputRoot.XMLNSC.records;
+MOVE cursor FIRSTCHILD;
+WHILE LASTMOVE(cursor) DO
+    SET OutBodyRef.records[I].value = cursor.value;
+    SET I = I + 1;
+    MOVE cursor NEXTSIBLING;
+END WHILE;
+```
+
+I need to generate a Java `DataMapper.java` class that maps the ESQL statements to Java setter calls. The class should:
+- Be in the package `com.example.mapper`.
+- Import model classes from `com.example.model`.
+- Have a method `public Output map(Input input, Map<String, String> headers, String requestIdentifier)`.
+- Handle all ESQL constructs:
+  - SET statements (e.g., `output.getMrm().getReqtrnbuf().setReqTrnBufTypId(1)`).
+  - CAST (e.g., `Integer.parseInt("1")`).
+  - COALESCE (e.g., `Optional.ofNullable(input.getUserId()).orElse("defaultUser")`).
+  - FOR loops (convert to Java `for` loops over lists).
+  - WHILE loops (convert to Java `for` loops over lists).
+  - CREATE LASTCHILD (e.g., initialize `output.setMrm(new Mrm())`).
+- Initialize nested objects only once using a global `Set<String>` to track initialized paths.
+- Convert ESQL field names to Java camelCase (e.g., `REQ_TRN_BUF_TYP_ID` to `reqTrnBufTypId`).
+
+Steps:
+1. Parse the ESQL script to identify all statements.
+2. Resolve references (e.g., `OutBodyRef` to `OutputRoot.MRM`).
+3. Generate Java code for each statement:
+   - Handle SET statements with proper path resolution.
+   - Apply CAST and COALESCE transformations.
+   - Convert FOR and WHILE loops to Java `for` loops.
+   - Initialize objects for CREATE LASTCHILD statements.
+4. Ensure nested objects are initialized only once.
+5. Write the `DataMapper.java` class.
+
+Provide the Java code for `DataMapper.java`.
+```
+
+---
+
+### Prompt 4: Build the Complete ESQL-to-Java Converter
+This prompt combines the previous steps into a single, comprehensive converter script that handles all ESQL constructs.
+
+**Prompt:**
+```
+I need a Java program `EsqlToJavaConverter.java` that converts an ESQL script (used in IBM Integration Bus) to Java code. The ESQL script manipulates message structures (e.g., InputRoot, OutputRoot, Environment) using statements like DECLARE, SET, FOR, WHILE, CAST, COALESCE, CREATE LASTCHILD, CREATE FIELD, MOVE, and more. Here’s the ESQL script to convert:
+
+```
+DECLARE I INTEGER 1;
+DECLARE OutBodyRef REFERENCE TO OutputRoot.MRM;
+
+CREATE LASTCHILD OF OutputRoot.MRM DOMAIN('MRM');
+
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_BUF_TYP_ID = CAST(1 AS INTEGER);
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_USRID = COALESCE(InputRoot.JSON.Data.userId, 'defaultUser');
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_TRN_ID = 'W038';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_OBJ_CD = 'BNF';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_SRV_CD = 'ADR';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_ACN_CD = 'V';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_BUF_CNT = 0;
+
+CREATE LASTCHILD OF OutBodyRef.ReqDataAdrBuf;
+
+SET OutBodyRef.ReqDataAdrBuf.REQ_DATA_BNF_ID = 'someValue';
+
+FOR item AS InputRoot.JSON.Data.items[] DO
+    SET OutBodyRef.items[I].name = item.name;
+    SET I = I + 1;
+END FOR;
+
+DECLARE cursor REFERENCE TO InputRoot.XMLNSC.records;
+MOVE cursor FIRSTCHILD;
+WHILE LASTMOVE(cursor) DO
+    SET OutBodyRef.records[I].value = cursor.value;
+    SET I = I + 1;
+    MOVE cursor NEXTSIBLING;
+END WHILE;
+```
+
+Requirements:
+1. **Parse the ESQL Script**:
+   - Use regular expressions to parse all ESQL statements (DECLARE, SET, FOR, WHILE, CAST, COALESCE, CREATE LASTCHILD, CREATE FIELD, MOVE, etc.).
+   - Resolve references (e.g., `OutBodyRef` to `OutputRoot.MRM`).
+   - Handle nested paths (e.g., `OutputRoot.MRM.ReqTrnBuf`).
+
+2. **Generate Java Model Classes**:
+   - Create classes for each path segment (e.g., `Output`, `Mrm`, `Reqtrnbuf`, `Reqdataadrbuf`, `Input`, `Item`, `Items`, `Records`).
+   - Place classes in the package `com.example.model`.
+   - Use Lombok's `@Data` annotation.
+   - Add fields with appropriate Java types (e.g., `Integer` for numbers, `String` for text, `List` for arrays).
+   - Convert ESQL field names to Java camelCase (e.g., `REQ_TRN_BUF_TYP_ID` to `reqTrnBufTypId`).
+
+3. **Generate a Mapper Class**:
+   - Create `DataMapper.java` in the package `com.example.mapper`.
+   - Include a method `public Output map(Input input, Map<String, String> headers, String requestIdentifier)`.
+   - Map ESQL SET statements to Java setter calls.
+   - Handle nested paths (e.g., `OutputRoot.MRM.ReqTrnBuf` to `output.getMrm().getReqtrnbuf()`).
+   - Initialize nested objects only once using a global `Set<String>` to track initialized paths.
+   - Support CAST (e.g., `Integer.parseInt`).
+   - Support COALESCE (e.g., `Optional.ofNullable`).
+   - Convert FOR and WHILE loops to Java `for` loops.
+
+4. **Handle Edge Cases**:
+   - Support array indexing (e.g., `items[I]`).
+   - Handle headers (e.g., `Environment.HTTPRequestHeader."content-type"`).
+   - Support date/time fields (e.g., `LocalDateTime` for date fields).
+   - Avoid redundant `if` checks for object initialization.
+
+5. **Output**:
+   - Write generated files to a `generated/` directory.
+   - Ensure the code is clean, follows Java conventions, and is free of syntax errors.
+
+Steps:
+1. Create a `main` method to read the ESQL script from a file (e.g., `input.esql`).
+2. Parse the ESQL script using regular expressions for each statement type.
+3. Build a data structure to store the parsed information (e.g., classes, logic blocks, references).
+4. Generate model classes based on the parsed paths and fields.
+5. Generate the `DataMapper.java` class with the mapping logic.
+6. Write the generated files to the `generated/` directory.
+
+Provide the complete Java code for `EsqlToJavaConverter.java`.
+```
+
+---
+
+### Prompt 5: Debug and Optimize the Converter
+This prompt focuses on debugging and optimizing the converter to address issues like redundant `if` checks, incorrect paths, and field naming.
+
+**Prompt:**
+```
+I have a Java program `EsqlToJavaConverter.java` that converts ESQL to Java code, but the generated code has several issues. Here’s the ESQL script used for conversion:
+
+```
+DECLARE I INTEGER 1;
+DECLARE OutBodyRef REFERENCE TO OutputRoot.MRM;
+
+CREATE LASTCHILD OF OutputRoot.MRM DOMAIN('MRM');
+
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_BUF_TYP_ID = CAST(1 AS INTEGER);
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_USRID = COALESCE(InputRoot.JSON.Data.userId, 'defaultUser');
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_TRN_ID = 'W038';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_OBJ_CD = 'BNF';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_SRV_CD = 'ADR';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_ACN_CD = 'V';
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_BUF_CNT = 0;
+
+CREATE LASTCHILD OF OutBodyRef.ReqDataAdrBuf;
+
+SET OutBodyRef.ReqDataAdrBuf.REQ_DATA_BNF_ID = 'someValue';
+
+FOR item AS InputRoot.JSON.Data.items[] DO
+    SET OutBodyRef.items[I].name = item.name;
+    SET I = I + 1;
+END FOR;
+
+DECLARE cursor REFERENCE TO InputRoot.XMLNSC.records;
+MOVE cursor FIRSTCHILD;
+WHILE LASTMOVE(cursor) DO
+    SET OutBodyRef.records[I].value = cursor.value;
+    SET I = I + 1;
+    MOVE cursor NEXTSIBLING;
+END WHILE;
+```
+
+The generated `DataMapper.java` has the following issues:
+
+```
+if (output.getReqtrnbuf() == null) {
+}
+output.setReqtrnbuf(new Reqtrnbuf());
+output.getReqtrnbuf().setReqtrnbuftypid(1);
+output.getReqtrnbuf().setReqtrnusrid("defaultUser");
+output.getReqtrnbuf().setReqtrntrnid("W038");
+output.getReqtrnbuf().setReqtrnobjcd("BNF");
+output.getReqtrnbuf().setReqtrnsrvcd("ADR");
+output.getReqtrnbuf().setReqtrnacncd("V");
+output.getReqtrnbuf().setReqtrnbufcnt(0);
+if (output.getReqdatadrbuf() == null) {
+    output.setReqdatadrbuf(new Reqdatadrbuf());
+}
+output.getReqdatadrbuf().setReqdatabnfid("someValue");
+```
+
+Issues:
+1. **Incorrect Path**:
+   - `output.getReqtrnbuf()` should be `output.getMrm().getReqtrnbuf()` (from `OutputRoot.MRM.ReqTrnBuf`).
+   - `output.getReqdatadrbuf()` should be `output.getMrm().getReqdatadrbuf()` (from `OutputRoot.MRM.ReqDataAdrBuf`).
+
+2. **Redundant `if` Check**:
+   - The `if (output.getReqtrnbuf() == null) {}` block is empty, and the `setReqtrnbuf` call is unconditional, which is redundant.
+   - Initialization should happen inside the `if` block and only once per path.
+
+3. **Incorrect Field Naming**:
+   - `setReqtrnbuftypid` should be `setReqTrnBufTypId` (from `REQ_TRN_BUF_TYP_ID`).
+   - `setReqtrnusrid` should be `setReqTrnUsrid` (from `REQ_TRN_USRID`).
+   - `setReqtrntrnid` should be `setReqTrnTrnId` (from `REQ_TRN_TRN_ID`).
+   - `setReqtrnobjcd` should be `setReqTrnObjCd` (from `REQ_TRN_OBJ_CD`).
+   - `setReqtrnsrvcd` should be `setReqTrnSrvCd` (from `REQ_TRN_SRV_CD`).
+   - `setReqtrnacncd` should be `setReqTrnAcnCd` (from `REQ_TRN_ACN_CD`).
+   - `setReqtrnbufcnt` should be `setReqTrnBufCnt` (from `REQ_TRN_BUF_CNT`).
+   - `setReqdatabnfid` should be `setReqDataBnfId` (from `REQ_DATA_BNF_ID`).
+
+4. **Missing COALESCE Logic**:
+   - The `COALESCE(InputRoot.JSON.Data.userId, 'defaultUser')` should be `Optional.ofNullable(input.getUserId()).orElse("defaultUser")`.
+
+Fix the `EsqlToJavaConverter.java` script to:
+1. Correct the path resolution (e.g., `OutputRoot.MRM.ReqTrnBuf` to `output.getMrm().getReqtrnbuf()`).
+2. Remove redundant `if` checks and ensure initialization happens only once per path using a global `Set<String>`.
+3. Fix field naming to follow proper Java camelCase conventions.
+4. Correctly handle COALESCE statements using `Optional.ofNullable`.
+
+Provide the updated `EsqlToJavaConverter.java` code and the corrected `DataMapper.java` output.
+```
+
+---
+
+### Prompt 6: Test the Converter with Additional Edge Cases
+This prompt tests the converter with additional ESQL features and edge cases to ensure robustness.
+
+**Prompt:**
+```
+I have a Java program `EsqlToJavaConverter.java` that converts ESQL to Java code. I want to test it with a more complex ESQL script that includes additional edge cases like headers, date formatting, and nested loops. Here’s the ESQL script:
+
+```
+DECLARE I INTEGER 1;
+DECLARE OutBodyRef REFERENCE TO OutputRoot.MRM;
+
+CREATE LASTCHILD OF OutputRoot.MRM DOMAIN('MRM');
+
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_BUF_TYP_ID = CAST(1 AS INTEGER);
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_USRID = COALESCE(InputRoot.JSON.Data.userId, 'defaultUser');
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_DATE = DATE_FORMAT(CURRENT_DATE, '%Y-%m-%d');
+SET OutBodyRef.ReqTrnBuf.REQ_TRN_HEADER = Environment.HTTPRequestHeader."content-type";
+
+FOR item AS InputRoot.JSON.Data.items[] DO
+    SET OutBodyRef.items[I].name = item.name;
+    FOR subItem AS item.subItems[] DO
+        SET OutBodyRef.items[I].subItems[I].value = subItem.value;
+    END FOR;
+    SET I = I + 1;
+END FOR;
+```
+
+Requirements:
+1. Parse the ESQL script to handle:
+   - DATE_FORMAT (e.g., convert to `LocalDateTime` with `DateTimeFormatter`).
+   - Headers (e.g., `Environment.HTTPRequestHeader."content-type"` to `headers.get("content-type")`).
+   - Nested FOR loops (e.g., `item.subItems[]` inside `items[]`).
+2. Generate model classes for all paths (e.g., `Input`, `Item`, `SubItem`, `Output`, `Mrm`, `Reqtrnbuf`, `Items`, `SubItems`).
+3. Generate the `DataMapper.java` class to:
+   - Handle DATE_FORMAT by converting to `LocalDateTime.parse` with the appropriate format.
+   - Map headers to `headers.get()` calls.
+   - Convert nested FOR loops to nested Java `for` loops.
+4. Ensure nested objects are initialized only once.
+
+Provide the updated `EsqlToJavaConverter.java` code to handle these edge cases, and show the generated Java files (`Input.java`, `Item.java`, `SubItem.java`, `Output.java`, `Mrm.java`, `Reqtrnbuf.java`, `Items.java`, `SubItems.java`, `DataMapper.java`).
+```
+
+---
+
+### How These Prompts Cover the Full Conversion
+
+1. **Prompt 1** defines the overall scope and requirements, ensuring the AI understands the full range of ESQL constructs and the expected Java output.
+2. **Prompt 2** focuses on parsing the ESQL script and generating model classes, covering paths, fields, and naming conventions.
+3. **Prompt 3** generates the `DataMapper.java` class, handling all ESQL constructs like SET, CAST, COALESCE, FOR, WHILE, and CREATE LASTCHILD.
+4. **Prompt 4** builds the complete `EsqlToJavaConverter.java` script, combining parsing, model generation, and mapping logic into a single program.
+5. **Prompt 5** debugs and optimizes the converter, addressing issues like incorrect paths, redundant `if` checks, field naming, and COALESCE handling.
+6. **Prompt 6** tests the converter with additional edge cases (e.g., headers, date formatting, nested loops) to ensure robustness.
+
+### Using These Prompts
+
+- **Start with Prompt 1** to establish the requirements and plan.
+- **Use Prompts 2 and 3** to generate the initial model and mapper classes, ensuring the AI understands the structure.
+- **Use Prompt 4** to build the complete converter script.
+- **Use Prompt 5** to debug and fix any issues in the generated code.
+- **Use Prompt 6** to test the converter with more complex ESQL scripts and edge cases.
+
+These prompts are designed to be iterative, allowing you to refine the converter as you encounter new ESQL constructs or issues. If you’re working with an AI tool, you can use these prompts sequentially to build the full solution, or focus on specific prompts to address particular aspects of the conversion.
+
+Let me know if you need further assistance with applying these prompts or extending the converter for additional ESQL features!
