@@ -1,4 +1,4 @@
-package complexesqloJava;
+Thank you for the clarification, Anna! I understand that you want the ESQL-to-Java converter to handle references to Environment and treat Environment similarly to OutputRoot. This means:Recognize Environment References: The converter should parse Environment paths (e.g., Environment.Variables, Environment.Variables.clientTraceLevel) and treat them as a hierarchical structure, just like OutputRoot.Generate Model Classes: Create a model class for Environment (e.g., Environment with a nested Variables class) and include fields based on the ESQL references.Handle Assignments: Process SET statements involving Environment (e.g., SET Environment.Variables.clientTraceLevel = ...) and generate appropriate setters in the DataMapper class.Support References: If a DECLARE statement creates a reference to Environment (e.g., DECLARE envRef REFERENCE TO Environment.Variables), the converter should resolve these references correctly.Let’s modify the EsqlToJavaConverter.java to support Environment in a way that mirrors the handling of OutputRoot. We’ll:Add Environment as a root structure, similar to InputRoot and OutputRoot.Create a model class for Environment and its nested structures (e.g., Variables).Update the path processing and assignment logic to handle Environment paths.Ensure references to Environment (e.g., envRef) are resolved and used correctly in the generated Java code.Updated EsqlToJavaConverter.javaHere’s the modified converter with support for Environment:package complexesqloJava;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -36,7 +36,7 @@ public class EsqlToJavaConverter {
 
     private static final Pattern PROCEDURE_PATTERN = Pattern.compile("CREATE\\s+PROCEDURE\\s+(\\w+)\\s*\\(\\s*\\)\\s*BEGIN\\s+(.+?)\\s+END\\s*;", Pattern.DOTALL);
     private static final Pattern ASSIGNMENT_PATTERN = Pattern.compile("SET\\s+([^=]+)\\s*=\\s*([^;]+);", Pattern.DOTALL);
-    private static final Pattern INPUT_PATTERN = Pattern.compile("(InputRoot\\.(?:JSON\\.Data|XML|XMLNSC|MRM)(?:\\.\\*:?\\w+)*(?:\\.Item\\[.*?\\])?)\\.([\\w*:]+)", Pattern.DOTALL);
+    private static final Pattern INPUT_PATTERN = Pattern.compile("(InputRoot\\.(?:JSON\\.Data|XML|XMLNSC|MRM|DFDL)(?:\\.\\*:?\\w+)*(?:\\.Item\\[.*?\\])?)\\.([\\w*:]+)", Pattern.DOTALL);
     private static final Pattern HEADER_PATTERN = Pattern.compile("([^\\.]+)\\.\"([^\"]+)\"", Pattern.DOTALL);
     private static final Pattern CAST_PATTERN = Pattern.compile("CAST\\(([^)]+)\\s+AS\\s+(\\w+)\\)", Pattern.DOTALL);
     private static final Pattern COALESCE_PATTERN = Pattern.compile("COALESCE\\(([^,]+(?:,[^,]+)*)\\)", Pattern.DOTALL);
@@ -48,7 +48,7 @@ public class EsqlToJavaConverter {
     private static final Pattern MOVE_PATTERN = Pattern.compile("MOVE\\s+(\\w+)\\s+FIRSTCHILD\\s*;", Pattern.DOTALL);
     private static final Pattern DATE_PATTERN = Pattern.compile("DATE_FORMAT\\(([^,]+),\\s*'([^']+)'\\)", Pattern.DOTALL);
     private static final Pattern CREATE_LASTCHILD_PATTERN = Pattern.compile("CREATE\\s+LASTCHILD\\s+OF\\s+([^\\s]+)\\s+NAME\\s+(\\w+);", Pattern.DOTALL);
-    private static final Pattern CREATE_FIELD_PATTERN = Pattern.compile("CREATE\\s+FIELD\\s+([^\\s]+)\\.(\\w+)\\s+TYPE\\s+NAME\\s+(\\w+);", Pattern.DOTALL);
+    private static final Pattern CREATE_FIELD_PATTERN = Pattern.compile("CREATE\\s+FIELD\\s+([^\\s]+)\\.(\\w+)\\s*(?:TYPE\\s+NAME\\s+(\\w+))?;", Pattern.DOTALL);
     private static final Pattern LOOP_INDEX_PATTERN = Pattern.compile("SET\\s+([^=]+)\\.Item\\[(\\w+)\\]\\.(\\w+)\\s*=\\s*([^;]+);", Pattern.DOTALL);
 
     public static void main(String[] args) {
@@ -88,6 +88,7 @@ public class EsqlToJavaConverter {
 
         ClassStructure inputClass = classes.computeIfAbsent("Input", ClassStructure::new);
         ClassStructure outputClass = classes.computeIfAbsent("Output", ClassStructure::new);
+        ClassStructure envClass = classes.computeIfAbsent("Environment", ClassStructure::new);
 
         Matcher declareMatcher = DECLARE_PATTERN.matcher(esqlScript);
         while (declareMatcher.find()) {
@@ -107,7 +108,7 @@ public class EsqlToJavaConverter {
             String procedureName = procedureMatcher.group(1);
             String body = procedureMatcher.group(2);
             List<String> procLogic = new ArrayList<>();
-            parseProcedureBody(body, procLogic, classes, inputClass, outputClass, references, headerKeys, variables);
+            parseProcedureBody(body, procLogic, classes, inputClass, outputClass, envClass, references, headerKeys, variables);
             procedureBlocks.put(procedureName, procLogic);
         }
 
@@ -115,7 +116,7 @@ public class EsqlToJavaConverter {
         while (assignmentMatcher.find()) {
             if (!isWithinProcedure(assignmentMatcher.start(), procedureMatcher)) {
                 processAssignment(assignmentMatcher.group(1).trim(), assignmentMatcher.group(2).trim(), logicBlocks,
-                        classes, inputClass, outputClass, references, headerKeys, variables, null);
+                        classes, inputClass, outputClass, envClass, references, headerKeys, variables, null);
             }
         }
 
@@ -123,7 +124,7 @@ public class EsqlToJavaConverter {
         while (forMatcher.find()) {
             if (!isWithinProcedure(forMatcher.start(), procedureMatcher)) {
                 processForLoop(forMatcher.group(1), forMatcher.group(2), forMatcher.group(3), logicBlocks, classes,
-                        inputClass, outputClass, references, variables, 0);
+                        inputClass, outputClass, envClass, references, variables, 0);
             }
         }
 
@@ -131,18 +132,18 @@ public class EsqlToJavaConverter {
         while (whileMatcher.find()) {
             if (!isWithinProcedure(whileMatcher.start(), procedureMatcher)) {
                 processWhileLoop(whileMatcher.group(1), whileMatcher.group(2), esqlScript.substring(0, whileMatcher.start()),
-                        logicBlocks, classes, inputClass, outputClass, references, variables);
+                        logicBlocks, classes, inputClass, outputClass, envClass, references, variables);
             }
         }
 
         Matcher createLastChildMatcher = CREATE_LASTCHILD_PATTERN.matcher(esqlScript);
         while (createLastChildMatcher.find()) {
-            processCreateLastChild(createLastChildMatcher.group(1), createLastChildMatcher.group(2), logicBlocks, classes, outputClass, references);
+            processCreateLastChild(createLastChildMatcher.group(1), createLastChildMatcher.group(2), logicBlocks, classes, outputClass, envClass, references);
         }
 
         Matcher createFieldMatcher = CREATE_FIELD_PATTERN.matcher(esqlScript);
         while (createFieldMatcher.find()) {
-            processCreateField(createFieldMatcher.group(1), createFieldMatcher.group(2), createFieldMatcher.group(3), logicBlocks, classes, outputClass, references);
+            processCreateField(createFieldMatcher.group(1), createFieldMatcher.group(2), createFieldMatcher.group(3), logicBlocks, classes, outputClass, envClass, references);
         }
 
         result.put("classes", classes);
@@ -153,44 +154,44 @@ public class EsqlToJavaConverter {
     }
 
     private static void parseProcedureBody(String body, List<String> procLogic, Map<String, ClassStructure> classes,
-            ClassStructure inputClass, ClassStructure outputClass, Map<String, String> references, Set<String> headerKeys,
-            Map<String, String> variables) {
+            ClassStructure inputClass, ClassStructure outputClass, ClassStructure envClass, Map<String, String> references,
+            Set<String> headerKeys, Map<String, String> variables) {
         Matcher assignmentMatcher = ASSIGNMENT_PATTERN.matcher(body);
         while (assignmentMatcher.find()) {
             processAssignment(assignmentMatcher.group(1).trim(), assignmentMatcher.group(2).trim(), procLogic, classes,
-                    inputClass, outputClass, references, headerKeys, variables, null);
+                    inputClass, outputClass, envClass, references, headerKeys, variables, null);
         }
 
         Matcher forMatcher = FOR_PATTERN.matcher(body);
         while (forMatcher.find()) {
             processForLoop(forMatcher.group(1), forMatcher.group(2), forMatcher.group(3), procLogic, classes,
-                    inputClass, outputClass, references, variables, 0);
+                    inputClass, outputClass, envClass, references, variables, 0);
         }
 
         Matcher whileMatcher = WHILE_PATTERN.matcher(body);
         while (whileMatcher.find()) {
             processWhileLoop(whileMatcher.group(1), whileMatcher.group(2), body.substring(0, whileMatcher.start()),
-                    procLogic, classes, inputClass, outputClass, references, variables);
+                    procLogic, classes, inputClass, outputClass, envClass, references, variables);
         }
 
         Matcher createLastChildMatcher = CREATE_LASTCHILD_PATTERN.matcher(body);
         while (createLastChildMatcher.find()) {
-            processCreateLastChild(createLastChildMatcher.group(1), createLastChildMatcher.group(2), procLogic, classes, outputClass, references);
+            processCreateLastChild(createLastChildMatcher.group(1), createLastChildMatcher.group(2), procLogic, classes, outputClass, envClass, references);
         }
 
         Matcher createFieldMatcher = CREATE_FIELD_PATTERN.matcher(body);
         while (createFieldMatcher.find()) {
-            processCreateField(createFieldMatcher.group(1), createFieldMatcher.group(2), createFieldMatcher.group(3), procLogic, classes, outputClass, references);
+            processCreateField(createFieldMatcher.group(1), createFieldMatcher.group(2), createFieldMatcher.group(3), procLogic, classes, outputClass, envClass, references);
         }
     }
 
     private static void processAssignment(String outputPath, String value, List<String> logicBlocks,
             Map<String, ClassStructure> classes, ClassStructure inputClass, ClassStructure outputClass,
-            Map<String, String> references, Set<String> headerKeys, Map<String, String> variables, String iterator) {
+            ClassStructure envClass, Map<String, String> references, Set<String> headerKeys, Map<String, String> variables, String iterator) {
         String resolvedOutputPath = resolveReference(outputPath, references);
         String resolvedValue = resolveReference(value, references);
 
-        if (!resolvedOutputPath.startsWith("OutputRoot.JSON.Data") || resolvedOutputPath.contains("httpCode")
+        if (!resolvedOutputPath.matches("(OutputRoot\\.(JSON\\.Data|MRM|DFDL)|Environment).*") || resolvedOutputPath.contains("httpCode")
                 || resolvedOutputPath.contains("httpMessage") || resolvedOutputPath.contains("moreInformation")
                 || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
                 || resolvedValue.contains("moreInformation")) {
@@ -216,7 +217,8 @@ public class EsqlToJavaConverter {
             value = coalesceValue;
         }
 
-        processPath(fullOutputPath, classes, outputClass, true, castType != null ? castType : value);
+        ClassStructure targetClass = resolvedOutputPath.startsWith("Environment") ? envClass : outputClass;
+        processPath(fullOutputPath, classes, targetClass, true, castType != null ? castType : value);
 
         Matcher inputMatcher = INPUT_PATTERN.matcher(value);
         while (inputMatcher.find()) {
@@ -236,13 +238,13 @@ public class EsqlToJavaConverter {
 
         String[] outputParts = resolvedOutputPath.split("\\.");
         String outputField = outputParts[outputParts.length - 1].toLowerCase();
-        String setter = generateSetter(outputField, value, references, castType, coalesceValue, defaultValue, headerMatcher, iterator);
+        String setter = generateSetter(resolvedOutputPath, outputField, value, references, castType, coalesceValue, defaultValue, headerMatcher, iterator);
         logicBlocks.add(setter);
     }
 
     private static void processForLoop(String iterator, String collectionPath, String body, List<String> logicBlocks,
             Map<String, ClassStructure> classes, ClassStructure inputClass, ClassStructure outputClass,
-            Map<String, String> references, Map<String, String> variables, int nestingLevel) {
+            ClassStructure envClass, Map<String, String> references, Map<String, String> variables, int nestingLevel) {
         if (body.contains("httpCode") || body.contains("httpMessage") || body.contains("moreInformation")) {
             return;
         }
@@ -298,7 +300,7 @@ public class EsqlToJavaConverter {
 
         Matcher nestedForMatcher = FOR_PATTERN.matcher(body);
         if (nestedForMatcher.find()) {
-            processForLoop(nestedForMatcher.group(1), nestedForMatcher.group(2), nestedForMatcher.group(3), logicBlocks, classes, inputClass, outputClass, references, variables, nestingLevel + 1);
+            processForLoop(nestedForMatcher.group(1), nestedForMatcher.group(2), nestedForMatcher.group(3), logicBlocks, classes, inputClass, outputClass, envClass, references, variables, nestingLevel + 1);
             String nestedCollectionName = extractCollectionName(resolveReference(nestedForMatcher.group(2), references), true);
             String nestedItemClassName = capitalize(nestedCollectionName.replaceAll("s$", ""));
             loop.append(indent).append("            List<").append(nestedItemClassName).append("> nestedList = ").append(iterator).append(".get").append(capitalize(nestedCollectionName)).append("().stream()\n")
@@ -320,13 +322,13 @@ public class EsqlToJavaConverter {
 
     private static void processWhileLoop(String refName, String body, String priorContent, List<String> logicBlocks,
             Map<String, ClassStructure> classes, ClassStructure inputClass, ClassStructure outputClass,
-            Map<String, String> references, Map<String, String> variables) {
+            ClassStructure envClass, Map<String, String> references, Map<String, String> variables) {
         if (body.contains("httpCode") || body.contains("httpMessage") || body.contains("moreInformation")) {
             return;
         }
 
         String refPath = references.getOrDefault(refName, "");
-        if (!refPath.matches("InputRoot\\.(XML|XMLNSC|MRM|JSON\\.Data)(?:\\.\\*:?\\w+)*")) return;
+        if (!refPath.matches("InputRoot\\.(XML|XMLNSC|MRM|DFDL|JSON\\.Data)(?:\\.\\*:?\\w+)*")) return;
 
         String collectionName = extractCollectionName(refPath, false);
         String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
@@ -369,55 +371,73 @@ public class EsqlToJavaConverter {
             .append("        })\n")
             .append("        .collect(Collectors.toList());\n")
             .append("}\n")
-            .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+            .append("output.set").append(capitalize(collectionField).append("(").append(collectionField).append(");");
 
         Matcher moveMatcher = MOVE_PATTERN.matcher(priorContent);
         if (moveMatcher.find() && moveMatcher.group(1).equals(refName)) {
-            // Adjust for MOVE FIRSTCHILD if needed, but Stream.skip(1) is less relevant here
+            // Adjust for MOVE FIRSTCHILD if needed
         }
 
         logicBlocks.add(loop.toString());
     }
 
     private static void processCreateLastChild(String parentPath, String name, List<String> logicBlocks,
-            Map<String, ClassStructure> classes, ClassStructure outputClass, Map<String, String> references) {
+            Map<String, ClassStructure> classes, ClassStructure outputClass, ClassStructure envClass, Map<String, String> references) {
         String resolvedPath = resolveReference(parentPath, references);
+        ClassStructure targetClass = resolvedPath.startsWith("Environment") ? envClass : outputClass;
+
         String[] parts = resolvedPath.split("\\.");
         String collectionField = parts[parts.length - 1].toLowerCase();
         String itemClassName = capitalize(collectionField.replaceAll("s$", ""));
         ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
-        outputClass.addField(collectionField, "List<" + itemClassName + ">");
+        targetClass.addField(collectionField, "List<" + itemClassName + ">");
 
         StringBuilder create = new StringBuilder()
-            .append("List<").append(itemClassName).append("> ").append(collectionField).append(" = output.get").append(capitalize(collectionField)).append("() == null ? new ArrayList<>() : output.get").append(capitalize(collectionField)).append("();\n")
+            .append(resolvedPath.startsWith("Environment") ? "environment" : "output")
+            .append(".get").append(capitalize(collectionField)).append("() == null ? new ArrayList<>() : ")
+            .append(resolvedPath.startsWith("Environment") ? "environment" : "output")
+            .append(".get").append(capitalize(collectionField)).append("();\n")
             .append(itemClassName).append(" newItem = new ").append(itemClassName).append("();\n")
             .append("newItem.set").append(capitalize(name)).append("(\"\");\n")
             .append(collectionField).append(".add(newItem);\n")
-            .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+            .append(resolvedPath.startsWith("Environment") ? "environment" : "output")
+            .append(".set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
 
         logicBlocks.add(create.toString());
         itemClass.addField(name.toLowerCase(), "String");
     }
 
     private static void processCreateField(String parentPath, String fieldName, String typeName, List<String> logicBlocks,
-            Map<String, ClassStructure> classes, ClassStructure outputClass, Map<String, String> references) {
+            Map<String, ClassStructure> classes, ClassStructure outputClass, ClassStructure envClass, Map<String, String> references) {
         String resolvedPath = resolveReference(parentPath, references);
-        String[] parts = resolvedPath.split("\\.");
-        String className = parts.length > 3 ? capitalize(parts[3].replace("*:", "")) : "Output";
-        ClassStructure targetClass = classes.computeIfAbsent(className, ClassStructure::new);
-        String javaType = TYPE_MAPPING.getOrDefault(typeName.toUpperCase(), "String");
+        ClassStructure targetClass;
+        String root;
 
-        targetClass.addField(fieldName.toLowerCase(), javaType);
-        if (!className.equals("Output")) {
-            outputClass.addField(parts[3].replace("*:", "").toLowerCase(), className);
+        if (resolvedPath.startsWith("Environment")) {
+            targetClass = envClass;
+            root = "environment";
+        } else {
+            targetClass = outputClass;
+            root = "output";
         }
 
-        String setter = "output" + (className.equals("Output") ? "" : ".get" + className + "()") + ".set" + capitalize(fieldName) + "(null);";
+        String[] parts = resolvedPath.split("\\.");
+        String className = parts.length > 2 ? capitalize(parts[2].replace("*:", "")) : targetClass.name;
+        ClassStructure nestedClass = classes.computeIfAbsent(className, ClassStructure::new);
+        String javaType = typeName != null ? TYPE_MAPPING.getOrDefault(typeName.toUpperCase(), "String") : "String";
+
+        nestedClass.addField(fieldName.toLowerCase(), javaType);
+        if (!className.equals(targetClass.name)) {
+            targetClass.addField(parts[2].replace("*:", "").toLowerCase(), className);
+        }
+
+        String setter = root + (className.equals(targetClass.name) ? "" : ".get" + className + "()") + ".set" + capitalize(fieldName) + "(null);";
         logicBlocks.add(setter);
     }
 
-    private static String generateSetter(String outputField, String value, Map<String, String> references,
+    private static String generateSetter(String outputPath, String outputField, String value, Map<String, String> references,
             String castType, String coalesceValue, String defaultValue, Matcher headerMatcher, String iterator) {
+        String root = outputPath.startsWith("Environment") ? "environment" : "output";
         Matcher dateMatcher = DATE_PATTERN.matcher(value);
         if (dateMatcher.find()) {
             String dateExpr = dateMatcher.group(1);
@@ -425,13 +445,13 @@ public class EsqlToJavaConverter {
             String javaFormat = convertDateFormat(format);
             String resolvedDateExpr = resolveReference(dateExpr, references);
             String dateValue = resolvedDateExpr.contains("InputRoot") ? buildInputGetter(resolvedDateExpr, iterator) : convertValue(resolvedDateExpr);
-            return "output.set" + capitalize(outputField) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
+            return root + ".set" + capitalize(outputField) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
         }
 
         headerMatcher.reset(value);
         if (headerMatcher.find() && references.containsKey(headerMatcher.group(1)) && references.get(headerMatcher.group(1)).contains("HTTPRequestHeader")) {
             String headerKey = headerMatcher.group(2).toLowerCase();
-            return "output.set" + capitalize(outputField) + "(headersMap.get(\"" + headerKey + "\"));";
+            return root + ".set" + capitalize(outputField) + "(headersMap.get(\"" + headerKey + "\"));";
         }
 
         String resolvedValue = resolveReference(value, references);
@@ -443,12 +463,12 @@ public class EsqlToJavaConverter {
                 if (castType != null) {
                     coalesceExpression = applyCasting(coalesceExpression, castType);
                 }
-                return "output.set" + capitalize(outputField) + "(" + coalesceExpression + ");";
+                return root + ".set" + capitalize(outputField) + "(" + coalesceExpression + ");";
             } else if (castType != null) {
                 String castExpression = applyCasting(inputGetter, castType);
-                return "output.set" + capitalize(outputField) + "(" + castExpression + ");";
+                return root + ".set" + capitalize(outputField) + "(" + castExpression + ");";
             } else {
-                return "output.set" + capitalize(outputField) + "(" + inputGetter + ");";
+                return root + ".set" + capitalize(outputField) + "(" + inputGetter + ");";
             }
         }
 
@@ -459,23 +479,22 @@ public class EsqlToJavaConverter {
             String delimiter = substringMatcher.group(3);
             String subExpr = expr.contains("InputRoot") ? buildInputGetter(expr, iterator) : convertValue(expr);
             String substringExpr = "AFTER".equals(operation) ? subExpr + ".substring(" + subExpr + ".indexOf(\"" + delimiter + "\") + 1)" : subExpr + ".substring(0, " + subExpr + ".indexOf(\"" + delimiter + "\"))";
-            return "output.set" + capitalize(outputField) + "(" + substringExpr + ");";
+            return root + ".set" + capitalize(outputField) + "(" + substringExpr + ");";
         }
 
-        return "output.set" + capitalize(outputField) + "(" + convertValue(value) + ");";
+        return root + ".set" + capitalize(outputField) + "(" + convertValue(value) + ");";
     }
 
     private static String buildInputGetter(String resolvedValue, String iterator) {
         String[] inputParts = resolvedValue.split("\\.");
         StringBuilder inputGetter = new StringBuilder(iterator != null ? iterator : "input");
-        if (resolvedValue.contains("MRM")) {
-            for (int i = 2; i < inputParts.length - 1; i++) {
-                if (!inputParts[i].equals("MRM")) {
-                    inputGetter.append(".get").append(capitalize(inputParts[i].replace("*:", ""))).append("()");
-                }
+        int startIndex = resolvedValue.contains("MRM") || resolvedValue.contains("DFDL") ? 2 : 3;
+        if (resolvedValue.contains("JSON.Data")) startIndex = 3;
+
+        for (int i = startIndex; i < inputParts.length - 1; i++) {
+            if (!inputParts[i].equals("MRM") && !inputParts[i].equals("DFDL") && !inputParts[i].equals("JSON") && !inputParts[i].equals("Data")) {
+                inputGetter.append(".get").append(capitalize(inputParts[i].replace("*:", ""))).append("()");
             }
-        } else if (inputParts.length > 3) {
-            inputGetter.append(".get").append(capitalize(inputParts[3].replace("*:", ""))).append("()");
         }
         inputGetter.append(".get").append(capitalize(inputParts[inputParts.length - 1].replace("*:", ""))).append("()");
         return inputGetter.toString();
@@ -514,33 +533,60 @@ public class EsqlToJavaConverter {
     private static void processPath(String fullPath, Map<String, ClassStructure> classes, ClassStructure rootClass,
             boolean isOutput, String value) {
         String[] parts = fullPath.split("\\.");
-        if (parts.length < 4) {
+        if (parts.length < 2) {
             return;
         }
 
-        if (fullPath.contains("MRM")) {
-            processMrmPath(fullPath, classes, rootClass, isOutput, value);
-            return;
-        }
-
-        String fieldOrClassName = parts[3].replace("*:", "").toLowerCase();
-        if (parts.length == 4 && !fullPath.contains(".Item[")) {
-            String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldOrClassName, fullPath, value);
-            rootClass.addField(fieldOrClassName, type);
-        } else if (parts.length > 4 && parts[4].matches("Item\\[.*?\\]")) {
-            String collectionName = fieldOrClassName;
-            String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
-            rootClass.addField(collectionName, "List<" + itemClassName + ">");
-            classes.computeIfAbsent(itemClassName, ClassStructure::new);
+        if (fullPath.startsWith("Environment")) {
+            processEnvironmentPath(fullPath, classes, rootClass, value);
+        } else if (fullPath.contains("MRM") || fullPath.contains("DFDL")) {
+            processDomainPath(fullPath, classes, rootClass, isOutput, value);
+        } else if (fullPath.contains("JSON.Data")) {
+            String fieldOrClassName = parts[3].replace("*:", "").toLowerCase();
+            if (parts.length == 4 && !fullPath.contains(".Item[")) {
+                String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldOrClassName, fullPath, value);
+                rootClass.addField(fieldOrClassName, type);
+            } else if (parts.length > 4 && parts[4].matches("Item\\[.*?\\]")) {
+                String collectionName = fieldOrClassName;
+                String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
+                rootClass.addField(collectionName, "List<" + itemClassName + ">");
+                classes.computeIfAbsent(itemClassName, ClassStructure::new);
+            }
         }
     }
 
-    private static void processMrmPath(String fullPath, Map<String, ClassStructure> classes, ClassStructure rootClass,
+    private static void processEnvironmentPath(String fullPath, Map<String, ClassStructure> classes, ClassStructure rootClass, String value) {
+        String[] parts = fullPath.split("\\.");
+        ClassStructure currentClass = rootClass;
+        int startIndex = 1; // Start after "Environment"
+
+        for (int i = startIndex; i < parts.length - 1; i++) {
+            String fieldName = parts[i].replace("*:", "").toLowerCase();
+            String nextClassName = capitalize(fieldName.replaceAll("s$", ""));
+            if (i == parts.length - 2 && !parts[i + 1].matches("Item\\[.*?\\]")) {
+                String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
+                currentClass.addField(fieldName, type);
+            } else {
+                ClassStructure nestedClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
+                currentClass.addField(fieldName, nextClassName);
+                currentClass = nestedClass;
+            }
+        }
+        if (!parts[parts.length - 1].matches("Item\\[.*?\\]")) {
+            String fieldName = parts[parts.length - 1].replace("*:", "").toLowerCase();
+            String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
+            currentClass.addField(fieldName, type);
+        }
+    }
+
+    private static void processDomainPath(String fullPath, Map<String, ClassStructure> classes, ClassStructure rootClass,
             boolean isOutput, String value) {
         String[] parts = fullPath.split("\\.");
         ClassStructure currentClass = rootClass;
-        for (int i = 2; i < parts.length - 1; i++) {
-            if (!parts[i].equals("MRM")) {
+        int startIndex = fullPath.contains("JSON.Data") ? 3 : 2;
+
+        for (int i = startIndex; i < parts.length - 1; i++) {
+            if (!parts[i].equals("MRM") && !parts[i].equals("DFDL") && !parts[i].equals("JSON") && !parts[i].equals("Data")) {
                 String fieldName = parts[i].replace("*:", "").toLowerCase();
                 String nextClassName = capitalize(fieldName.replaceAll("s$", ""));
                 if (i == parts.length - 2 && !parts[i + 1].matches("Item\\[.*?\\]")) {
@@ -598,7 +644,7 @@ public class EsqlToJavaConverter {
 
         for (Map.Entry<String, List<String>> entry : procedureBlocks.entrySet()) {
             String methodName = entry.getKey().substring(0, 1).toLowerCase() + entry.getKey().substring(1);
-            mapper.append("    private void ").append(methodName).append("(Input input, Output output, Map<String, String> headersMap) {\n");
+            mapper.append("    private void ").append(methodName).append("(Input input, Output output, Environment environment, Map<String, String> headersMap) {\n");
             for (String block : entry.getValue()) {
                 mapper.append("        ").append(block).append("\n");
             }
@@ -612,7 +658,8 @@ public class EsqlToJavaConverter {
             mapper.append("        headersMap.put(\"").append(key).append("\", headers.get(\"").append(key).append("\"));\n");
         }
 
-        mapper.append("        Output output = new Output();\n");
+        mapper.append("        Output output = new Output();\n")
+              .append("        Environment environment = new Environment();\n");
 
         for (String block : logicBlocks) {
             mapper.append("        ").append(block).append("\n");
@@ -620,7 +667,7 @@ public class EsqlToJavaConverter {
 
         for (String procName : procedureBlocks.keySet()) {
             String methodName = procName.substring(0, 1).toLowerCase() + procName.substring(1);
-            mapper.append("        ").append(methodName).append("(input, output, headersMap);\n");
+            mapper.append("        ").append(methodName).append("(input, output, environment, headersMap);\n");
         }
 
         mapper.append("        return output;\n")
@@ -663,7 +710,7 @@ public class EsqlToJavaConverter {
 
     private static String convertValue(String value) {
         if (value.startsWith("'") && value.endsWith("'")) {
-            String val = value.substring(1, value.length - 1);
+            String val = value.substring(1, value.length() - 1);
             if ("true".equalsIgnoreCase(val) || "false".equalsIgnoreCase(val)) return val.toLowerCase();
             return "\"" + val + "\"";
         }
@@ -790,7 +837,7 @@ public class EsqlToJavaConverter {
             }
         }
 
-        // Handle standalone SET after IF (likely a bug in ESQL)
+        // Handle standalone SET after IF
         Matcher finalSetter = LOOP_INDEX_PATTERN.matcher(body);
         while (finalSetter.find()) {
             String field = finalSetter.group(3).toLowerCase();
@@ -835,7 +882,7 @@ public class EsqlToJavaConverter {
         if (matcher.find()) {
             String rawPath = matcher.group(1).trim();
             String resolvedPath = resolveReference(rawPath, references);
-            if (!resolvedPath.startsWith("OutputRoot.JSON.Data.")) {
+            if (!resolvedPath.matches("(OutputRoot\\.(JSON\\.Data|MRM|DFDL)|Environment).*")) {
                 resolvedPath = "OutputRoot.JSON.Data." + resolvedPath;
             }
             return resolvedPath;
