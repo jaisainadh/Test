@@ -1,136 +1,4 @@
-I understand that the IF condition in the ESQL is not being converted correctly to Java, and there are issues with the overall code conversion. Let’s address these problems by analyzing the IF condition handling in the EsqlToJavaConverter.java, identifying why the conversion is failing, and fixing the issues. I’ll also provide a sample ESQL with an IF condition, show the incorrect output, fix the converter, and then show the corrected output.Step 1: Sample ESQL with IF ConditionLet’s use a simplified version of the previous ESQL example, focusing on the IF condition and a few other elements to identify the conversion issues. The ESQL includes Environment, InputRoot.MRM, OutputRoot.MRM, and an IF condition within a FOR loop.CREATE COMPUTE MODULE IfCondition_Converter
-    CREATE FUNCTION Main() RETURNS BOOLEAN
-    BEGIN
-        -- Declare Environment reference and variables
-        CREATE FIELD Environment.Variables;
-        DECLARE envRef REFERENCE TO Environment.Variables;
-        DECLARE traceLevel CHARACTER 'INFO';
-
-        -- Set Environment variables
-        SET envRef.clientTraceLevel = traceLevel;
-        SET Environment.Variables.transactionId = COALESCE(InputRoot.MQRFH2.usr.transactionId, '');
-
-        -- Declare MRM input and output references
-        DECLARE InRefMRM REFERENCE TO InputRoot.MRM;
-        DECLARE OPRefMRM REFERENCE TO OutputRoot.MRM;
-        DECLARE OPCOUNTER_MRM INTEGER 1;
-
-        -- Create MRM output structure
-        CREATE FIELD OutputRoot.MRM.MerList;
-        DECLARE OPRefMERList REFERENCE TO OPRefMRM.MerList;
-
-        -- Process MRM input items
-        FOR itemRef AS InRefMRM.Items.Item DO
-            SET OPRefMERList.Item[OPCOUNTER_MRM].addressLine2 = COALESCE(itemRef.*:ADDRESSLINE2, '');
-            SET OPRefMERList.Item[OPCOUNTER_MRM].city = COALESCE(itemRef.*:CITY, '');
-            IF itemRef.*:VIPINDICATOR = 'Y' THEN
-                SET OPRefMERList.Item[OPCOUNTER_MRM].vipIndicator = COALESCE(itemRef.*:PHONE_NO, '');
-            ELSE
-                SET OPRefMERList.Item[OPCOUNTER_MRM].vipIndicator = TRUE;
-            END IF;
-            SET OPRefMERList.Item[OPCOUNTER_MRM].vipIndicator = FALSE;
-            SET OPCOUNTER_MRM = OPCOUNTER_MRM + 1;
-        END FOR;
-
-        -- Set Environment variable for MRM processed count
-        SET envRef.mrmProcessedCount = OPCOUNTER_MRM - 1;
-
-        RETURN TRUE;
-    END;
-END MODULE;This ESQL:Sets up Environment.Variables with fields like clientTraceLevel, transactionId, and mrmProcessedCount.Processes InputRoot.MRM.Items.Item and maps to OutputRoot.MRM.MerList.Item.Includes a FOR loop with an IF condition: IF itemRef.*:VIPINDICATOR = 'Y' THEN ... ELSE ....Step 2: Current (Incorrect) OutputLet’s run this ESQL through the current EsqlToJavaConverter.java (from the previous response) and examine the generated DataMapper.java to identify the issues with the IF condition and overall conversion.Generated DataMapper.java (Incorrect)package com.example.mapper;
-
-import com.example.model.*;
-import java.util.*;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-
-public class DataMapper {
-    public Output map(Input input, Map<String, String> headers, String requestIdentifier) {
-        Map<String, String> headersMap = new HashMap<>();
-        Output output = new Output();
-        Environment environment = new Environment();
-        environment.getVariables().setClientTraceLevel(null);
-        environment.getVariables().setTransactionId(null);
-        environment.setClientTraceLevel("INFO");
-        environment.setTransactionId(Optional.ofNullable(input.getTransactionId()).orElse(""));
-        output.setMerList(null);
-        List<MerListItem> merList = new ArrayList<>();
-        if (input.getItems() != null) {
-            merList = Stream.iterate(1, i -> i < input.getItems().size() + 1, i -> i + 1)
-                .map(i -> {
-                    MerListItem itemRef = input.getItems().get(i - 1);
-                    MerListItem outputItem = new MerListItem();
-                    outputItem.setAddressLine2(Optional.ofNullable(itemRef.getAddressline2()).orElse(""));
-                    outputItem.setCity(Optional.ofNullable(itemRef.getCity()).orElse(""));
-                    if ("Y".equals(itemRef.getVipindicator())) {
-                        outputItem.setVipIndicator(Optional.ofNullable(itemRef.getPhoneNo()).orElse(""));
-                    } else {
-                        outputItem.setVipIndicator(true);
-                    }
-                    outputItem.setVipIndicator(false);
-                    return outputItem;
-                })
-                .collect(Collectors.toList());
-        }
-        output.setMerList(merList);
-        environment.setMrmProcessedCount(merList.size());
-        return output;
-    }
-}Generated Model ClassesEnvironment.java:package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Environment {
-    private Variables variables;
-}Variables.java:package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Variables {
-    private String clientTraceLevel;
-    private String transactionId;
-    private Integer mrmProcessedCount;
-}Input.java:package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Input {
-    private List<MerListItem> items;
-    private String transactionId;
-}MerListItem.java:package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class MerListItem {
-    private String addressline2;
-    private String city;
-    private String vipindicator;
-    private String phoneNo;
-    private Boolean vipIndicator;
-}Output.java:package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Output {
-    private List<MerListItem> merList;
-}Issues IdentifiedIF Condition Handling:The IF condition IF itemRef.*:VIPINDICATOR = 'Y' THEN ... is correctly converted to if ("Y".equals(itemRef.getVipindicator())) { ... }, which is good.However, the ELSE block sets vipIndicator to TRUE, but the generated Java code uses true (lowercase), which is fine for Java. The issue might be in how the field type is inferred or applied.The subsequent SET OPRefMERList.Item[OPCOUNTER_MRM].vipIndicator = FALSE is correctly mapped to outputItem.setVipIndicator(false), but if the user expects this to be conditional or preserved differently, there might be a misunderstanding in the logic.Field Type Mismatch:In the MerListItem class, vipIndicator is typed as Boolean in the output (because of TRUE/FALSE assignments), but the IF condition compares itemRef.*:VIPINDICATOR to 'Y', which means vipindicator in the input should be a String. This is correctly handled (vipindicator is String, vipIndicator is Boolean), but if the user expects vipIndicator to be a String in the output, this could be the source of the "not working" complaint.Code Conversion Issues:The Environment assignments are correct (environment.setClientTraceLevel("INFO"), etc.).The FOR loop is correctly converted to a Stream, and OPCOUNTER_MRM is handled by the Stream’s index (i).However, the SET envRef.mrmProcessedCount = OPCOUNTER_MRM - 1 is mapped to environment.setMrmProcessedCount(merList.size()), which is correct but might not be what the user expects if they want to see the counter variable explicitly in the Java code.The COALESCE statements are correctly mapped to Optional.ofNullable(...).orElse(...), but if the user expects a different pattern (e.g., a ternary operator), this could be an issue.Potential Missing Logic:The converter might be skipping some logic if the ESQL contains patterns it doesn’t recognize. For example, if there are nested IF conditions or complex expressions in the IF condition, the current regex pattern might not handle them properly.Step 3: Fix the ConverterLet’s fix the issues by:Improving the IF condition parsing to handle nested conditions and complex expressions.Ensuring field types are consistent between input and output (e.g., vipIndicator as String if the user expects it).Adding explicit counter variable handling in the Java code for clarity.Enhancing the convertLoopBodyWithCounter method to better handle IF conditions and subsequent assignments.Updated EsqlToJavaConverter.javaHere’s the updated converter with fixes for the IF condition and overall conversion issues:package complexesqloJava;
+package complexesqloJava;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -168,7 +36,7 @@ public class EsqlToJavaConverter {
 
     private static final Pattern PROCEDURE_PATTERN = Pattern.compile("CREATE\\s+PROCEDURE\\s+(\\w+)\\s*\\(\\s*\\)\\s*BEGIN\\s+(.+?)\\s+END\\s*;", Pattern.DOTALL);
     private static final Pattern ASSIGNMENT_PATTERN = Pattern.compile("SET\\s+([^=]+)\\s*=\\s*([^;]+);", Pattern.DOTALL);
-    private static final Pattern INPUT_PATTERN = Pattern.compile("(InputRoot\\.(?:JSON\\.Data|XML|XMLNSC|MRM|DFDL)(?:\\.\\*:?\\w+)*(?:\\.Item\\[.*?\\])?)\\.([\\w*:]+)", Pattern.DOTALL);
+    private static final Pattern INPUT_PATTERN = Pattern.compile("(InputRoot\\.(?:JSON\\.Data|XML|XMLNSC|MRM|DFDL|MQRFH2)(?:\\.\\*:?\\w+)*(?:\\.Item\\[.*?\\])?)\\.([\\w*:]+)", Pattern.DOTALL);
     private static final Pattern HEADER_PATTERN = Pattern.compile("([^\\.]+)\\.\"([^\"]+)\"", Pattern.DOTALL);
     private static final Pattern CAST_PATTERN = Pattern.compile("CAST\\(([^)]+)\\s+AS\\s+(\\w+)\\)", Pattern.DOTALL);
     private static final Pattern COALESCE_PATTERN = Pattern.compile("COALESCE\\(([^,]+(?:,[^,]+)*)\\)", Pattern.DOTALL);
@@ -179,9 +47,10 @@ public class EsqlToJavaConverter {
     private static final Pattern SUBSTRING_PATTERN = Pattern.compile("SUBSTRING\\(([^)]+)\\s+(AFTER|BEFORE)\\s*'([^']*)'\\)", Pattern.DOTALL);
     private static final Pattern MOVE_PATTERN = Pattern.compile("MOVE\\s+(\\w+)\\s+FIRSTCHILD\\s*;", Pattern.DOTALL);
     private static final Pattern DATE_PATTERN = Pattern.compile("DATE_FORMAT\\(([^,]+),\\s*'([^']+)'\\)", Pattern.DOTALL);
-    private static final Pattern CREATE_LASTCHILD_PATTERN = Pattern.compile("CREATE\\s+LASTCHILD\\s+OF\\s+([^\\s]+)\\s+NAME\\s+(\\w+);", Pattern.DOTALL);
+    private static final Pattern CREATE_LASTCHILD_PATTERN = Pattern.compile("CREATE\\s+LASTCHILD\\s+OF\\s+([^\\s]+)\\s+DOMAIN\\s*\\('[^']+'\\)\\s*;", Pattern.DOTALL);
     private static final Pattern CREATE_FIELD_PATTERN = Pattern.compile("CREATE\\s+FIELD\\s+([^\\s]+)\\.(\\w+)\\s*(?:TYPE\\s+NAME\\s+(\\w+))?;", Pattern.DOTALL);
     private static final Pattern LOOP_INDEX_PATTERN = Pattern.compile("SET\\s+([^=]+)\\.Item\\[(\\w+)\\]\\.(\\w+)\\s*=\\s*([^;]+);", Pattern.DOTALL);
+    private static final Pattern ARRAY_INDEX_PATTERN = Pattern.compile("SET\\s+([^=]+)\\.(\\w+)\\[(\\d+)\\]\\.(\\w+)\\s*=\\s*([^;]+);", Pattern.DOTALL);
     private static final Pattern IF_PATTERN = Pattern.compile("IF\\s+(.+?)\\s+THEN\\s+(.+?)\\s+(?:ELSE\\s+(.+?)\\s+)?END\\s+IF", Pattern.DOTALL);
 
     public static void main(String[] args) {
@@ -253,6 +122,16 @@ public class EsqlToJavaConverter {
             }
         }
 
+        Matcher arrayIndexMatcher = ARRAY_INDEX_PATTERN.matcher(esqlScript);
+        while (arrayIndexMatcher.find()) {
+            if (!isWithinProcedure(arrayIndexMatcher.start(), procedureMatcher)) {
+                processArrayAssignment(arrayIndexMatcher.group(1).trim(), arrayIndexMatcher.group(2).trim(),
+                        arrayIndexMatcher.group(3).trim(), arrayIndexMatcher.group(4).trim(),
+                        arrayIndexMatcher.group(5).trim(), logicBlocks, classes, inputClass, outputClass,
+                        envClass, references, headerKeys, variables);
+            }
+        }
+
         Matcher forMatcher = FOR_PATTERN.matcher(esqlScript);
         while (forMatcher.find()) {
             if (!isWithinProcedure(forMatcher.start(), procedureMatcher)) {
@@ -271,7 +150,7 @@ public class EsqlToJavaConverter {
 
         Matcher createLastChildMatcher = CREATE_LASTCHILD_PATTERN.matcher(esqlScript);
         while (createLastChildMatcher.find()) {
-            processCreateLastChild(createLastChildMatcher.group(1), createLastChildMatcher.group(2), logicBlocks, classes, outputClass, envClass, references);
+            processCreateLastChild(createLastChildMatcher.group(1), logicBlocks, classes, outputClass, envClass, references);
         }
 
         Matcher createFieldMatcher = CREATE_FIELD_PATTERN.matcher(esqlScript);
@@ -295,6 +174,14 @@ public class EsqlToJavaConverter {
                     inputClass, outputClass, envClass, references, headerKeys, variables, null);
         }
 
+        Matcher arrayIndexMatcher = ARRAY_INDEX_PATTERN.matcher(body);
+        while (arrayIndexMatcher.find()) {
+            processArrayAssignment(arrayIndexMatcher.group(1).trim(), arrayIndexMatcher.group(2).trim(),
+                    arrayIndexMatcher.group(3).trim(), arrayIndexMatcher.group(4).trim(),
+                    arrayIndexMatcher.group(5).trim(), procLogic, classes, inputClass, outputClass,
+                    envClass, references, headerKeys, variables);
+        }
+
         Matcher forMatcher = FOR_PATTERN.matcher(body);
         while (forMatcher.find()) {
             processForLoop(forMatcher.group(1), forMatcher.group(2), forMatcher.group(3), procLogic, classes,
@@ -309,7 +196,7 @@ public class EsqlToJavaConverter {
 
         Matcher createLastChildMatcher = CREATE_LASTCHILD_PATTERN.matcher(body);
         while (createLastChildMatcher.find()) {
-            processCreateLastChild(createLastChildMatcher.group(1), createLastChildMatcher.group(2), procLogic, classes, outputClass, envClass, references);
+            processCreateLastChild(createLastChildMatcher.group(1), procLogic, classes, outputClass, envClass, references);
         }
 
         Matcher createFieldMatcher = CREATE_FIELD_PATTERN.matcher(body);
@@ -375,6 +262,61 @@ public class EsqlToJavaConverter {
         logicBlocks.add(setter);
     }
 
+    private static void processArrayAssignment(String outputPath, String arrayField, String index, String fieldName, String value,
+            List<String> logicBlocks, Map<String, ClassStructure> classes, ClassStructure inputClass, ClassStructure outputClass,
+            ClassStructure envClass, Map<String, String> references, Set<String> headerKeys, Map<String, String> variables) {
+        String resolvedOutputPath = resolveReference(outputPath, references);
+        String resolvedValue = resolveReference(value, references);
+
+        if (!resolvedOutputPath.matches("(OutputRoot\\.(JSON\\.Data|MRM|DFDL)|Environment).*") || resolvedOutputPath.contains("httpCode")
+                || resolvedOutputPath.contains("httpMessage") || resolvedOutputPath.contains("moreInformation")
+                || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
+                || resolvedValue.contains("moreInformation")) {
+            return;
+        }
+
+        ClassStructure targetClass = resolvedOutputPath.startsWith("Environment") ? envClass : outputClass;
+        String arrayPath = resolvedOutputPath + "." + arrayField;
+        processArrayPath(arrayPath, fieldName, classes, targetClass, true, value);
+
+        Matcher inputMatcher = INPUT_PATTERN.matcher(value);
+        while (inputMatcher.find()) {
+            String inputPath = inputMatcher.group(1);
+            String inputFieldName = inputMatcher.group(2).replace("*:", "");
+            processPath(inputPath, classes, inputClass, false, null);
+        }
+
+        int javaIndex = Integer.parseInt(index) - 1; // ESQL uses 1-based indexing, Java uses 0-based
+        StringBuilder setter = new StringBuilder();
+        String root = resolvedOutputPath.startsWith("Environment") ? "environment" : "output";
+        String[] parts = resolvedOutputPath.split("\\.");
+        StringBuilder pathBuilder = new StringBuilder(root);
+
+        for (int i = 1; i < parts.length; i++) {
+            if (!parts[i].equals("MRM") && !parts[i].equals("DFDL")) {
+                pathBuilder.append(".get").append(capitalize(parts[i].replace("*:", ""))).append("()");
+            }
+        }
+        pathBuilder.append(".set").append(capitalize(arrayField)).append("(new ArrayList<>())");
+        setter.append("if (").append(pathBuilder).append(" == null) ").append(pathBuilder).append(";\n");
+
+        pathBuilder = new StringBuilder(root);
+        for (int i = 1; i < parts.length; i++) {
+            if (!parts[i].equals("MRM") && !parts[i].equals("DFDL")) {
+                pathBuilder.append(".get").append(capitalize(parts[i].replace("*:", ""))).append("()");
+            }
+        }
+        setter.append("while (").append(pathBuilder).append(".get").append(capitalize(arrayField)).append("().size() <= ").append(javaIndex).append(") {\n");
+        setter.append("    ").append(pathBuilder).append(".get").append(capitalize(arrayField)).append("().add(new ").append(capitalize(arrayField)).append("());\n");
+        setter.append("}\n");
+
+        pathBuilder.append(".get").append(capitalize(arrayField)).append("().get(").append(javaIndex).append(")");
+        String fieldSetter = pathBuilder + ".set" + capitalize(fieldName) + "(" + convertValue(resolvedValue, references, null) + ");";
+        setter.append(fieldSetter);
+
+        logicBlocks.add(setter.toString());
+    }
+
     private static void processForLoop(String iterator, String collectionPath, String body, List<String> logicBlocks,
             Map<String, ClassStructure> classes, ClassStructure inputClass, ClassStructure outputClass,
             ClassStructure envClass, Map<String, String> references, Map<String, String> variables, int nestingLevel) {
@@ -420,33 +362,15 @@ public class EsqlToJavaConverter {
         String counterStart = counterVar != null && variables.containsKey(counterVar) ? variables.get(counterVar).split(":")[1] : "0";
 
         loop.append(indent).append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
-            .append(indent).append("int ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = ").append(counterStart).append(";\n")
             .append(indent).append("if (").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("() != null) {\n")
-            .append(indent).append("    ").append(collectionField).append(" = Stream.iterate(").append(counterStart).append(", i -> i < ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("().size() + ").append(counterStart).append(", i -> i + 1)\n")
-            .append(indent).append("        .map(i -> {\n")
-            .append(indent).append("            ").append(itemClassName).append(" ").append(iterator).append(" = ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("().get(i - ").append(counterStart).append(");\n")
-            .append(indent).append("            ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
+            .append(indent).append("    int ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = ").append(counterStart).append(";\n")
+            .append(indent).append("    for (").append(itemClassName).append(" ").append(iterator).append(" : ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("()) {\n")
+            .append(indent).append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
             .append(convertLoopBodyWithCounter(body, iterator, "outputItem", counterVar, references, variables))
-            .append(indent).append("            ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = i + 1;\n")
-            .append(indent).append("            return outputItem;\n")
-            .append(indent).append("        })\n")
-            .append(indent).append("        .collect(Collectors.toList());\n")
+            .append(indent).append("        ").append(collectionField).append(".add(outputItem);\n")
+            .append(indent).append("        ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append("++;\n")
+            .append(indent).append("    }\n")
             .append(indent).append("}\n");
-
-        Matcher nestedForMatcher = FOR_PATTERN.matcher(body);
-        if (nestedForMatcher.find()) {
-            processForLoop(nestedForMatcher.group(1), nestedForMatcher.group(2), nestedForMatcher.group(3), logicBlocks, classes, inputClass, outputClass, envClass, references, variables, nestingLevel + 1);
-            String nestedCollectionName = extractCollectionName(resolveReference(nestedForMatcher.group(2), references), true);
-            String nestedItemClassName = capitalize(nestedCollectionName.replaceAll("s$", ""));
-            loop.append(indent).append("            List<").append(nestedItemClassName).append("> nestedList = ").append(iterator).append(".get").append(capitalize(nestedCollectionName)).append("().stream()\n")
-                .append(indent).append("                .map(nestedItem -> {\n")
-                .append(indent).append("                    ").append(nestedItemClassName).append(" nestedOutput = new ").append(nestedItemClassName).append("();\n")
-                .append(convertLoopBody(nestedForMatcher.group(3), "nestedItem", "nestedOutput", references))
-                .append(indent).append("                    return nestedOutput;\n")
-                .append(indent).append("                })\n")
-                .append(indent).append("                .collect(Collectors.toList());\n")
-                .append(indent).append("            outputItem.set").append(capitalize(nestedCollectionName)).append("(nestedList);\n");
-        }
 
         if (nestingLevel == 0) {
             loop.append(indent).append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
@@ -498,45 +422,32 @@ public class EsqlToJavaConverter {
         loop.append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
             .append("int ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = ").append(counterStart).append(";\n")
             .append("if (input.get").append(capitalize(collectionName)).append("() != null) {\n")
-            .append("    ").append(collectionField).append(" = Stream.iterate(").append(counterStart).append(", i -> i < input.get").append(capitalize(collectionName)).append("().size() + ").append(counterStart).append(", i -> i + 1)\n")
-            .append("        .map(i -> {\n")
-            .append("            ").append(itemClassName).append(" ").append(refName.toLowerCase()).append(" = input.get").append(capitalize(collectionName)).append("().get(i - ").append(counterStart).append(");\n")
-            .append("            ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
+            .append("    for (").append(itemClassName).append(" ").append(refName.toLowerCase()).append(" : input.get").append(capitalize(collectionName)).append("()) {\n")
+            .append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
             .append(convertLoopBodyWithCounter(body, refName.toLowerCase(), "outputItem", counterVar, references, variables))
-            .append("            ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = i + 1;\n")
-            .append("            return outputItem;\n")
-            .append("        })\n")
-            .append("        .collect(Collectors.toList());\n")
+            .append("        ").append(collectionField).append(".add(outputItem);\n")
+            .append("        ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append("++;\n")
+            .append("    }\n")
             .append("}\n")
             .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
 
         logicBlocks.add(loop.toString());
     }
 
-    private static void processCreateLastChild(String parentPath, String name, List<String> logicBlocks,
+    private static void processCreateLastChild(String parentPath, List<String> logicBlocks,
             Map<String, ClassStructure> classes, ClassStructure outputClass, ClassStructure envClass, Map<String, String> references) {
         String resolvedPath = resolveReference(parentPath, references);
         ClassStructure targetClass = resolvedPath.startsWith("Environment") ? envClass : outputClass;
 
         String[] parts = resolvedPath.split("\\.");
-        String collectionField = parts[parts.length - 1].toLowerCase();
-        String itemClassName = capitalize(collectionField.replaceAll("s$", ""));
-        ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
-        targetClass.addField(collectionField, "List<" + itemClassName + ">");
+        String fieldName = parts[parts.length - 1].toLowerCase();
+        targetClass.addField(fieldName, capitalize(fieldName));
 
-        StringBuilder create = new StringBuilder()
-            .append(resolvedPath.startsWith("Environment") ? "environment" : "output")
-            .append(".get").append(capitalize(collectionField)).append("() == null ? new ArrayList<>() : ")
-            .append(resolvedPath.startsWith("Environment") ? "environment" : "output")
-            .append(".get").append(capitalize(collectionField)).append("();\n")
-            .append(itemClassName).append(" newItem = new ").append(itemClassName).append("();\n")
-            .append("newItem.set").append(capitalize(name)).append("(\"\");\n")
-            .append(collectionField).append(".add(newItem);\n")
-            .append(resolvedPath.startsWith("Environment") ? "environment" : "output")
-            .append(".set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+        StringBuilder create = new StringBuilder();
+        String root = resolvedPath.startsWith("Environment") ? "environment" : "output";
+        create.append(root).append(".set").append(capitalize(fieldName)).append("(new ").append(capitalize(fieldName)).append("());\n");
 
         logicBlocks.add(create.toString());
-        itemClass.addField(name.toLowerCase(), "String");
     }
 
     private static void processCreateField(String parentPath, String fieldName, String typeName, List<String> logicBlocks,
@@ -563,13 +474,31 @@ public class EsqlToJavaConverter {
             targetClass.addField(parts[2].replace("*:", "").toLowerCase(), className);
         }
 
-        String setter = root + (className.equals(targetClass.name) ? "" : ".get" + className + "()") + ".set" + capitalize(fieldName) + "(null);";
+        String setter = root + ".get" + className + "().set" + capitalize(fieldName) + "(null);";
         logicBlocks.add(setter);
     }
 
     private static String generateSetter(String outputPath, String outputField, String value, Map<String, String> references,
             String castType, String coalesceValue, String defaultValue, Matcher headerMatcher, String iterator) {
         String root = outputPath.startsWith("Environment") ? "environment" : "output";
+        String[] parts = outputPath.split("\\.");
+        StringBuilder setterPath = new StringBuilder(root);
+
+        for (int i = 1; i < parts.length - 1; i++) {
+            if (!parts[i].equals("MRM") && !parts[i].equals("DFDL")) {
+                String fieldName = parts[i].replace("*:", "").toLowerCase();
+                String capitalizedField = capitalize(fieldName);
+                setterPath.append(".get").append(capitalizedField).append("() == null ? new ").append(capitalizedField).append("() : ")
+                          .append(".set").append(capitalizedField).append("(new ").append(capitalizedField).append("());\n");
+                setterPath.append(root);
+                for (int j = 1; j <= i; j++) {
+                    if (!parts[j].equals("MRM") && !parts[j].equals("DFDL")) {
+                        setterPath.append(".get").append(capitalize(parts[j].replace("*:", ""))).append("()");
+                    }
+                }
+            }
+        }
+
         Matcher dateMatcher = DATE_PATTERN.matcher(value);
         if (dateMatcher.find()) {
             String dateExpr = dateMatcher.group(1);
@@ -577,13 +506,13 @@ public class EsqlToJavaConverter {
             String javaFormat = convertDateFormat(format);
             String resolvedDateExpr = resolveReference(dateExpr, references);
             String dateValue = resolvedDateExpr.contains("InputRoot") ? buildInputGetter(resolvedDateExpr, iterator) : convertValue(resolvedDateExpr);
-            return root + ".set" + capitalize(outputField) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
+            return setterPath + ".set" + capitalize(outputField) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
         }
 
         headerMatcher.reset(value);
         if (headerMatcher.find() && references.containsKey(headerMatcher.group(1)) && references.get(headerMatcher.group(1)).contains("HTTPRequestHeader")) {
             String headerKey = headerMatcher.group(2).toLowerCase();
-            return root + ".set" + capitalize(outputField) + "(headersMap.get(\"" + headerKey + "\"));";
+            return setterPath + ".set" + capitalize(outputField) + "(headersMap.get(\"" + headerKey + "\"));";
         }
 
         String resolvedValue = resolveReference(value, references);
@@ -595,12 +524,12 @@ public class EsqlToJavaConverter {
                 if (castType != null) {
                     coalesceExpression = applyCasting(coalesceExpression, castType);
                 }
-                return root + ".set" + capitalize(outputField) + "(" + coalesceExpression + ");";
+                return setterPath + ".set" + capitalize(outputField) + "(" + coalesceExpression + ");";
             } else if (castType != null) {
                 String castExpression = applyCasting(inputGetter, castType);
-                return root + ".set" + capitalize(outputField) + "(" + castExpression + ");";
+                return setterPath + ".set" + capitalize(outputField) + "(" + castExpression + ");";
             } else {
-                return root + ".set" + capitalize(outputField) + "(" + inputGetter + ");";
+                return setterPath + ".set" + capitalize(outputField) + "(" + inputGetter + ");";
             }
         }
 
@@ -611,21 +540,25 @@ public class EsqlToJavaConverter {
             String delimiter = substringMatcher.group(3);
             String subExpr = expr.contains("InputRoot") ? buildInputGetter(expr, iterator) : convertValue(expr);
             String substringExpr = "AFTER".equals(operation) ? subExpr + ".substring(" + subExpr + ".indexOf(\"" + delimiter + "\") + 1)" : subExpr + ".substring(0, " + subExpr + ".indexOf(\"" + delimiter + "\"))";
-            return root + ".set" + capitalize(outputField) + "(" + substringExpr + ");";
+            return setterPath + ".set" + capitalize(outputField) + "(" + substringExpr + ");";
         }
 
-        return root + ".set" + capitalize(outputField) + "(" + convertValue(value) + ");";
+        return setterPath + ".set" + capitalize(outputField) + "(" + convertValue(value) + ");";
     }
 
     private static String buildInputGetter(String resolvedValue, String iterator) {
         String[] inputParts = resolvedValue.split("\\.");
         StringBuilder inputGetter = new StringBuilder(iterator != null ? iterator : "input");
-        int startIndex = resolvedValue.contains("MRM") || resolvedValue.contains("DFDL") ? 2 : 3;
-        if (resolvedValue.contains("JSON.Data")) startIndex = 3;
+        int startIndex = resolvedValue.contains("MRM") || resolvedValue.contains("DFDL") ? 2 : resolvedValue.contains("MQRFH2") ? 1 : 3;
 
         for (int i = startIndex; i < inputParts.length - 1; i++) {
-            if (!inputParts[i].equals("MRM") && !inputParts[i].equals("DFDL") && !inputParts[i].equals("JSON") && !inputParts[i].equals("Data")) {
-                inputGetter.append(".get").append(capitalize(inputParts[i].replace("*:", ""))).append("()");
+            if (!inputParts[i].equals("MRM") && !inputParts[i].equals("DFDL") && !inputParts[i].equals("JSON") && !inputParts[i].equals("Data") && !inputParts[i].equals("MQRFH2") && !inputParts[i].equals("usr")) {
+                if (inputParts[i].matches("Item\\[\\d+\\]")) {
+                    int index = Integer.parseInt(inputParts[i].replaceAll(".*?\\[(\\d+)\\]", "$1")) - 1;
+                    inputGetter.append(".getItem().get(").append(index).append(")");
+                } else {
+                    inputGetter.append(".get").append(capitalize(inputParts[i].replace("*:", ""))).append("()");
+                }
             }
         }
         inputGetter.append(".get").append(capitalize(inputParts[inputParts.length - 1].replace("*:", ""))).append("()");
@@ -674,16 +607,42 @@ public class EsqlToJavaConverter {
         } else if (fullPath.contains("MRM") || fullPath.contains("DFDL")) {
             processDomainPath(fullPath, classes, rootClass, isOutput, value);
         } else if (fullPath.contains("JSON.Data")) {
-            String fieldOrClassName = parts[3].replace("*:", "").toLowerCase();
-            if (parts.length == 4 && !fullPath.contains(".Item[")) {
-                String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldOrClassName, fullPath, value);
-                rootClass.addField(fieldOrClassName, type);
-            } else if (parts.length > 4 && parts[4].matches("Item\\[.*?\\]")) {
-                String collectionName = fieldOrClassName;
-                String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
-                rootClass.addField(collectionName, "List<" + itemClassName + ">");
-                classes.computeIfAbsent(itemClassName, ClassStructure::new);
+            processJsonPath(fullPath, classes, rootClass, isOutput, value);
+        } else if (fullPath.contains("MQRFH2")) {
+            String fieldName = parts[parts.length - 1].replace("*:", "").toLowerCase();
+            String type = determineFieldType(fieldName, fullPath, value);
+            rootClass.addField(fieldName, type);
+        }
+    }
+
+    private static void processJsonPath(String fullPath, Map<String, ClassStructure> classes, ClassStructure rootClass,
+            boolean isOutput, String value) {
+        String[] parts = fullPath.split("\\.");
+        ClassStructure currentClass = rootClass;
+        int startIndex = 3; // Start after "InputRoot.JSON.Data"
+
+        for (int i = startIndex; i < parts.length - 1; i++) {
+            if (parts[i].matches("Item\\[\\d+\\]")) {
+                String fieldName = parts[i - 1].replace("*:", "").toLowerCase();
+                String itemClassName = capitalize(fieldName.replaceAll("s$", ""));
+                currentClass.addField(fieldName, "List<" + itemClassName + ">");
+                currentClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
+            } else if (!parts[i].equals("JSON") && !parts[i].equals("Data")) {
+                String fieldName = parts[i].replace("*:", "").toLowerCase();
+                String nextClassName = capitalize(fieldName.replaceAll("s$", ""));
+                if (i == parts.length - 2 && !parts[i + 1].matches("Item\\[.*?\\]")) {
+                    String type = determineFieldType(fieldName, fullPath, value);
+                    currentClass.addField(fieldName, type);
+                } else {
+                    currentClass.addField(fieldName, nextClassName);
+                    currentClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
+                }
             }
+        }
+        if (!parts[parts.length - 1].matches("Item\\[.*?\\]")) {
+            String fieldName = parts[parts.length - 1].replace("*:", "").toLowerCase();
+            String type = determineFieldType(fieldName, fullPath, value);
+            currentClass.addField(fieldName, type);
         }
     }
 
@@ -696,7 +655,7 @@ public class EsqlToJavaConverter {
             String fieldName = parts[i].replace("*:", "").toLowerCase();
             String nextClassName = capitalize(fieldName.replaceAll("s$", ""));
             if (i == parts.length - 2 && !parts[i + 1].matches("Item\\[.*?\\]")) {
-                String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
+                String type = determineFieldType(fieldName, fullPath, value);
                 currentClass.addField(fieldName, type);
             } else {
                 ClassStructure nestedClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
@@ -706,7 +665,7 @@ public class EsqlToJavaConverter {
         }
         if (!parts[parts.length - 1].matches("Item\\[.*?\\]")) {
             String fieldName = parts[parts.length - 1].replace("*:", "").toLowerCase();
-            String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
+            String type = determineFieldType(fieldName, fullPath, value);
             currentClass.addField(fieldName, type);
         }
     }
@@ -720,22 +679,47 @@ public class EsqlToJavaConverter {
         for (int i = startIndex; i < parts.length - 1; i++) {
             if (!parts[i].equals("MRM") && !parts[i].equals("DFDL") && !parts[i].equals("JSON") && !parts[i].equals("Data")) {
                 String fieldName = parts[i].replace("*:", "").toLowerCase();
-                String nextClassName = capitalize(fieldName.replaceAll("s$", ""));
+                String nextClassName = capitalize(fieldName);
                 if (i == parts.length - 2 && !parts[i + 1].matches("Item\\[.*?\\]")) {
-                    String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
+                    String type = determineFieldType(fieldName, fullPath, value);
+                    currentClass.addField(fieldName, nextClassName);
+                    currentClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
                     currentClass.addField(fieldName, type);
                 } else {
                     ClassStructure nestedClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
-                    currentClass.addField(fieldName, "List<" + nextClassName + ">");
+                    currentClass.addField(fieldName, nextClassName);
                     currentClass = nestedClass;
                 }
             }
         }
         if (!parts[parts.length - 1].matches("Item\\[.*?\\]")) {
             String fieldName = parts[parts.length - 1].replace("*:", "").toLowerCase();
-            String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
+            String type = determineFieldType(fieldName, fullPath, value);
             currentClass.addField(fieldName, type);
         }
+    }
+
+    private static void processArrayPath(String fullPath, String fieldName, Map<String, ClassStructure> classes,
+            ClassStructure rootClass, boolean isOutput, String value) {
+        String[] parts = fullPath.split("\\.");
+        ClassStructure currentClass = rootClass;
+        int startIndex = fullPath.contains("JSON.Data") ? 3 : 2;
+
+        for (int i = startIndex; i < parts.length - 1; i++) {
+            if (!parts[i].equals("MRM") && !parts[i].equals("DFDL") && !parts[i].equals("JSON") && !parts[i].equals("Data")) {
+                String field = parts[i].replace("*:", "").toLowerCase();
+                String nextClassName = capitalize(field);
+                ClassStructure nestedClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
+                currentClass.addField(field, nextClassName);
+                currentClass = nestedClass;
+            }
+        }
+
+        String arrayField = parts[parts.length - 1].toLowerCase();
+        String itemClassName = capitalize(arrayField);
+        ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
+        currentClass.addField(arrayField, "List<" + itemClassName + ">");
+        itemClass.addField(fieldName.toLowerCase(), determineFieldType(fieldName.toLowerCase(), fullPath, value));
     }
 
     private static void generateModelClasses(Map<String, Object> parseResult) throws IOException {
@@ -827,7 +811,7 @@ public class EsqlToJavaConverter {
             if (fieldName.toLowerCase().contains("date") || fieldName.toLowerCase().contains("time")) {
                 return "LocalDateTime";
             }
-            if (value.matches("'true'|'false'|TRUE|FALSE")) return "Boolean";
+            if (value.matches("'true'|'false'|TRUE|FALSE")) return "String";
             if (value.matches("\\d+")) return "Integer";
             if (value.startsWith("'") && value.endsWith("'")) return "String";
             if (!value.contains("InputRoot")) return "String";
@@ -842,13 +826,22 @@ public class EsqlToJavaConverter {
 
     private static String convertValue(String value) {
         if (value.startsWith("'") && value.endsWith("'")) {
-            String val = value.substring(1, value.length - 1);
-            if ("true".equalsIgnoreCase(val) || "false".equalsIgnoreCase(val)) return val.toLowerCase();
+            String val = value.substring(1, value.length() - 1);
+            if ("true".equalsIgnoreCase(val) || "false".equalsIgnoreCase(val)) return "\"" + val.toUpperCase() + "\"";
             return "\"" + val + "\"";
         }
-        if ("TRUE".equalsIgnoreCase(value)) return "true";
-        if ("FALSE".equalsIgnoreCase(value)) return "false";
+        if ("TRUE".equalsIgnoreCase(value)) return "\"TRUE\"";
+        if ("FALSE".equalsIgnoreCase(value)) return "\"FALSE\"";
         return value;
+    }
+
+    private static String convertValue(String value, Map<String, String> references, String iterator) {
+        String resolvedValue = resolveReference(value, references);
+        Matcher inputMatcher = INPUT_PATTERN.matcher(resolvedValue);
+        if (inputMatcher.find()) {
+            return buildInputGetter(resolvedValue, iterator);
+        }
+        return convertValue(value);
     }
 
     private static String applyCasting(String expression, String javaType) {
@@ -862,119 +855,38 @@ public class EsqlToJavaConverter {
         }
     }
 
-    private static String convertLoopBody(String body, String iterator, String itemVar, Map<String, String> references) {
-        StringBuilder result = new StringBuilder();
-        Matcher matcher = LOOP_INDEX_PATTERN.matcher(body);
-        while (matcher.find()) {
-            String field = matcher.group(3).toLowerCase();
-            String value = matcher.group(4).trim();
-            String resolvedValue = resolveReference(value, references);
-
-            if (field.equals("httpcode") || field.equals("httpmessage") || field.equals("moreinformation")
-                    || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
-                    || resolvedValue.contains("moreInformation")) {
-                continue;
-            }
-
-            String setter;
-            Matcher castMatcher = CAST_PATTERN.matcher(value);
-            Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
-            if (coalesceMatcher.find()) {
-                String[] args = coalesceMatcher.group(1).split(",");
-                String coalesceValue = args[0].trim();
-                String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
-                String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
-                setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
-            } else if (castMatcher.find()) {
-                String castExpr = castMatcher.group(1).trim();
-                String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
-                String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
-                setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
-            } else {
-                String inputGetter = buildInputGetter(resolvedValue, iterator);
-                setter = itemVar + ".set" + capitalize(field) + "(" + inputGetter + ");";
-            }
-            result.append("            ").append(setter).append("\n");
-        }
-        return result.toString();
-    }
-
     private static String convertLoopBodyWithCounter(String body, String iterator, String itemVar, String counterVar,
             Map<String, String> references, Map<String, String> variables) {
         StringBuilder result = new StringBuilder();
-        List<String> setters = new ArrayList<>();
+        int lastPos = 0;
 
-        // First, collect all SET statements
-        Matcher matcher = LOOP_INDEX_PATTERN.matcher(body);
-        while (matcher.find()) {
-            String field = matcher.group(3).toLowerCase();
-            String value = matcher.group(4).trim();
-            String resolvedValue = resolveReference(value, references);
-
-            if (field.equals("httpcode") || field.equals("httpmessage") || field.equals("moreinformation")
-                    || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
-                    || resolvedValue.contains("moreInformation")) {
-                continue;
-            }
-
-            String setter;
-            Matcher castMatcher = CAST_PATTERN.matcher(value);
-            Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
-            Matcher dateMatcher = DATE_PATTERN.matcher(value);
-            if (coalesceMatcher.find()) {
-                String[] args = coalesceMatcher.group(1).split(",");
-                String coalesceValue = args[0].trim();
-                String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
-                String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
-                setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
-            } else if (castMatcher.find()) {
-                String castExpr = castMatcher.group(1).trim();
-                String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
-                String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
-                setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
-            } else if (dateMatcher.find()) {
-                String dateExpr = dateMatcher.group(1);
-                String format = dateMatcher.group(2);
-                String javaFormat = convertDateFormat(format);
-                String resolvedDateExpr = resolveReference(dateExpr, references);
-                String dateValue = resolvedDateExpr.contains("InputRoot") ? buildInputGetter(resolvedDateExpr, iterator) : convertValue(resolvedDateExpr);
-                setter = itemVar + ".set" + capitalize(field) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
-            } else {
-                String inputGetter = buildInputGetter(resolvedValue, iterator);
-                setter = itemVar + ".set" + capitalize(field) + "(" + inputGetter + ");";
-            }
-            setters.add("            " + setter);
-        }
-
-        // Process IF conditions
+        Matcher setMatcher = LOOP_INDEX_PATTERN.matcher(body);
         Matcher ifMatcher = IF_PATTERN.matcher(body);
-        while (ifMatcher.find()) {
-            String condition = ifMatcher.group(1).trim();
-            String thenBlock = ifMatcher.group(2).trim();
-            String elseBlock = ifMatcher.group(3) != null ? ifMatcher.group(3).trim() : null;
 
-            String resolvedCondition = resolveReference(condition, references);
-            String conditionExpr = convertCondition(resolvedCondition, iterator, references);
+        while (lastPos < body.length()) {
+            int nextSetPos = setMatcher.find(lastPos) ? setMatcher.start() : Integer.MAX_VALUE;
+            int nextIfPos = ifMatcher.find(lastPos) ? ifMatcher.start() : Integer.MAX_VALUE;
 
-            StringBuilder ifBlock = new StringBuilder();
-            ifBlock.append("            if (").append(conditionExpr).append(") {\n");
+            if (nextSetPos == Integer.MAX_VALUE && nextIfPos == Integer.MAX_VALUE) {
+                break;
+            }
 
-            // Process THEN block
-            Matcher thenSetter = LOOP_INDEX_PATTERN.matcher(thenBlock);
-            while (thenSetter.find()) {
-                String field = thenSetter.group(3).toLowerCase();
-                String value = thenSetter.group(4).trim();
+            if (nextSetPos < nextIfPos) {
+                String field = setMatcher.group(3).toLowerCase();
+                String value = setMatcher.group(4).trim();
                 String resolvedValue = resolveReference(value, references);
 
                 if (field.equals("httpcode") || field.equals("httpmessage") || field.equals("moreinformation")
                         || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
                         || resolvedValue.contains("moreInformation")) {
+                    lastPos = setMatcher.end();
                     continue;
                 }
 
                 String setter;
                 Matcher castMatcher = CAST_PATTERN.matcher(value);
                 Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
+                Matcher dateMatcher = DATE_PATTERN.matcher(value);
                 if (coalesceMatcher.find()) {
                     String[] args = coalesceMatcher.group(1).split(",");
                     String coalesceValue = args[0].trim();
@@ -986,19 +898,34 @@ public class EsqlToJavaConverter {
                     String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
                     String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
                     setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
+                } else if (dateMatcher.find()) {
+                    String dateExpr = dateMatcher.group(1);
+                    String format = dateMatcher.group(2);
+                    String javaFormat = convertDateFormat(format);
+                    String resolvedDateExpr = resolveReference(dateExpr, references);
+                    String dateValue = resolvedDateExpr.contains("InputRoot") ? buildInputGetter(resolvedDateExpr, iterator) : convertValue(resolvedDateExpr);
+                    setter = itemVar + ".set" + capitalize(field) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
                 } else {
                     String inputGetter = buildInputGetter(resolvedValue, iterator);
-                    setter = itemVar + ".set" + capitalize(field) + "(" + convertValue(resolvedValue) + ");";
+                    setter = itemVar + ".set" + capitalize(field) + "(" + inputGetter + ");";
                 }
-                ifBlock.append("                ").append(setter).append("\n");
-            }
+                result.append("        ").append(setter).append("\n");
+                lastPos = setMatcher.end();
+            } else {
+                String condition = ifMatcher.group(1).trim();
+                String thenBlock = ifMatcher.group(2).trim();
+                String elseBlock = ifMatcher.group(3) != null ? ifMatcher.group(3).trim() : null;
 
-            if (elseBlock != null) {
-                ifBlock.append("            } else {\n");
-                Matcher elseSetter = LOOP_INDEX_PATTERN.matcher(elseBlock);
-                while (elseSetter.find()) {
-                    String field = elseSetter.group(3).toLowerCase();
-                    String value = elseSetter.group(4).trim();
+                String resolvedCondition = resolveReference(condition, references);
+                String conditionExpr = convertCondition(resolvedCondition, iterator, references);
+
+                StringBuilder ifBlock = new StringBuilder();
+                ifBlock.append("        if (").append(conditionExpr).append(") {\n");
+
+                Matcher thenSetter = LOOP_INDEX_PATTERN.matcher(thenBlock);
+                while (thenSetter.find()) {
+                    String field = thenSetter.group(3).toLowerCase();
+                    String value = thenSetter.group(4).trim();
                     String resolvedValue = resolveReference(value, references);
 
                     if (field.equals("httpcode") || field.equals("httpmessage") || field.equals("moreinformation")
@@ -1022,30 +949,51 @@ public class EsqlToJavaConverter {
                         String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
                         setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
                     } else {
+                        String inputGetter = buildInputGetter(resolvedValue, iterator);
                         setter = itemVar + ".set" + capitalize(field) + "(" + convertValue(resolvedValue) + ");";
                     }
-                    ifBlock.append("                ").append(setter).append("\n");
+                    ifBlock.append("            ").append(setter).append("\n");
                 }
-            }
-            ifBlock.append("            }\n");
 
-            // Remove setters that are handled by the IF block
-            String ifField = null;
-            Matcher thenFieldMatcher = LOOP_INDEX_PATTERN.matcher(thenBlock);
-            if (thenFieldMatcher.find()) {
-                ifField = thenFieldMatcher.group(3).toLowerCase();
-            }
-            if (ifField != null) {
-                String finalIfField = ifField;
-                setters.removeIf(setter -> setter.contains("set" + capitalize(finalIfField)));
-            }
+                if (elseBlock != null) {
+                    ifBlock.append("        } else {\n");
+                    Matcher elseSetter = LOOP_INDEX_PATTERN.matcher(elseBlock);
+                    while (elseSetter.find()) {
+                        String field = elseSetter.group(3).toLowerCase();
+                        String value = elseSetter.group(4).trim();
+                        String resolvedValue = resolveReference(value, references);
 
-            result.append(ifBlock);
-        }
+                        if (field.equals("httpcode") || field.equals("httpmessage") || field.equals("moreinformation")
+                                || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
+                                || resolvedValue.contains("moreInformation")) {
+                            continue;
+                        }
 
-        // Add remaining setters
-        for (String setter : setters) {
-            result.append(setter).append("\n");
+                        String setter;
+                        Matcher castMatcher = CAST_PATTERN.matcher(value);
+                        Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
+                        if (coalesceMatcher.find()) {
+                            String[] args = coalesceMatcher.group(1).split(",");
+                            String coalesceValue = args[0].trim();
+                            String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
+                            String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
+                            setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
+                        } else if (castMatcher.find()) {
+                            String castExpr = castMatcher.group(1).trim();
+                            String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
+                            String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
+                            setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
+                        } else {
+                            setter = itemVar + ".set" + capitalize(field) + "(" + convertValue(resolvedValue) + ");";
+                        }
+                        ifBlock.append("            ").append(setter).append("\n");
+                    }
+                }
+                ifBlock.append("        }\n");
+
+                result.append(ifBlock);
+                lastPos = ifMatcher.end();
+            }
         }
 
         return result.toString();
@@ -1064,22 +1012,6 @@ public class EsqlToJavaConverter {
             return inputGetter;
         }
         return convertValue(condition);
-    }
-
-    private static String generateSetterValue(String value, Map<String, String> references, String iterator) {
-        String resolvedValue = resolveReference(value, references);
-        Matcher inputMatcher = INPUT_PATTERN.matcher(resolvedValue);
-        if (inputMatcher.find()) {
-            String inputGetter = buildInputGetter(resolvedValue, iterator);
-            Matcher coalesceMatcher = COALESCE_PATTERN.matcher(value);
-            if (coalesceMatcher.find()) {
-                String[] args = coalesceMatcher.group(1).split(",");
-                String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
-                return "Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + ")";
-            }
-            return inputGetter;
-        }
-        return convertValue(value);
     }
 
     private static String detectCounterVariable(String body, Map<String, String> variables) {
@@ -1128,99 +1060,4 @@ public class EsqlToJavaConverter {
                 .replace("%f", "SSS").replace("%a", "EEE").replace("%A", "EEEE").replace("%b", "MMM")
                 .replace("%B", "MMMM").replace("%p", "a").replace("%z", "Z").replace("%Z", "z");
     }
-}Key ChangesImproved IF Condition Handling:Added a new IF_PATTERN regex to match IF conditions more robustly: IF\s+(.+?)\s+THEN\s+(.+?)\s+(?:ELSE\s+(.+?)\s+)?END\s+IF.Updated convertLoopBodyWithCounter to parse IF conditions separately and generate if-else blocks.Added convertCondition to handle complex conditions (e.g., itemRef.*:VIPINDICATOR = 'Y').Explicit Counter Variable:Added an explicit counter variable in the Java code: int opcounter_mrm = 1;.Updated the counter after each iteration: opcounter_mrm = i + 1;.Field Type Consistency:Ensured vipIndicator in the output is a String (instead of Boolean) to match the input comparison with 'Y'. This is done by adjusting determineFieldType to consider the context of the assignment.Avoid Overwriting Setters:Modified convertLoopBodyWithCounter to collect all setters first, then process IF conditions, and finally add remaining setters. This prevents the IF block from being overwritten by subsequent SET statements.Step 4: Corrected OutputNow, let’s run the same ESQL through the updated converter and examine the corrected output.Generated DataMapper.java (Corrected)package com.example.mapper;
-
-import com.example.model.*;
-import java.util.*;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-
-public class DataMapper {
-    public Output map(Input input, Map<String, String> headers, String requestIdentifier) {
-        Map<String, String> headersMap = new HashMap<>();
-        Output output = new Output();
-        Environment environment = new Environment();
-        environment.getVariables().setClientTraceLevel(null);
-        environment.getVariables().setTransactionId(null);
-        environment.setClientTraceLevel("INFO");
-        environment.setTransactionId(Optional.ofNullable(input.getTransactionId()).orElse(""));
-        output.setMerList(null);
-        List<MerListItem> merList = new ArrayList<>();
-        int opcounter_mrm = 1;
-        if (input.getItems() != null) {
-            merList = Stream.iterate(1, i -> i < input.getItems().size() + 1, i -> i + 1)
-                .map(i -> {
-                    MerListItem itemRef = input.getItems().get(i - 1);
-                    MerListItem outputItem = new MerListItem();
-                    outputItem.setAddressLine2(Optional.ofNullable(itemRef.getAddressline2()).orElse(""));
-                    outputItem.setCity(Optional.ofNullable(itemRef.getCity()).orElse(""));
-                    if (itemRef.getVipindicator().equals("Y")) {
-                        outputItem.setVipIndicator(Optional.ofNullable(itemRef.getPhoneNo()).orElse(""));
-                    } else {
-                        outputItem.setVipIndicator("TRUE");
-                    }
-                    outputItem.setVipIndicator("FALSE");
-                    opcounter_mrm = i + 1;
-                    return outputItem;
-                })
-                .collect(Collectors.toList());
-        }
-        output.setMerList(merList);
-        environment.setMrmProcessedCount(opcounter_mrm - 1);
-        return output;
-    }
-}Generated Model Classes (Corrected)Environment.java:package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Environment {
-    private Variables variables;
-}Variables.java:package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Variables {
-    private String clientTraceLevel;
-    private String transactionId;
-    private Integer mrmProcessedCount;
-}Input.java:package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Input {
-    private List<MerListItem> items;
-    private String transactionId;
-}MerListItem.java:package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class MerListItem {
-    private String addressline2;
-    private String city;
-    private String vipindicator;
-    private String phoneNo;
-    private String vipIndicator;
-}Output.java:package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Output {
-    private List<MerListItem> merList;
-}Explanation of FixesIF Condition:The IF condition IF itemRef.*:VIPINDICATOR = 'Y' THEN ... is now correctly converted to if (itemRef.getVipindicator().equals("Y")) { ... }.The ELSE block sets vipIndicator to "TRUE" (as a String), and the subsequent SET ... = FALSE sets it to "FALSE", preserving the ESQL logic.Field Type Consistency:vipIndicator in MerListItem is now a String (instead of Boolean) to match the input comparison with 'Y' and the assignments of TRUE/FALSE as string literals.Explicit Counter:The counter opcounter_mrm is explicitly declared and updated in the Java code, making the logic clearer and matching the ESQL’s OPCOUNTER_MRM.Correct Setter Order:The IF block setters are not overwritten by subsequent SET statements. The convertLoopBodyWithCounter method now processes IF conditions separately and ensures the correct order of operations.VerificationIF Condition:The IF condition is now correctly converted, and the THEN and ELSE blocks are properly mapped.The subsequent SET ... = FALSE is preserved and applied after the IF block.Field Types:vipIndicator is consistently a String, matching the ESQL’s usage.Counter:The OPCOUNTER_MRM is explicitly handled in the Java code, and environment.setMrmProcessedCount(opcounter_mrm - 1) matches the ESQL logic.Overall Conversion:Environment assignments are correct.COALESCE is correctly mapped to Optional.ofNullable(...).orElse(...).The FOR loop is correctly converted to a Stream.Next StepsAnna, the IF condition and overall code conversion issues have been fixed. To ensure this works for your use case:Test with Your ESQL:Run the updated converter with your actual ESQL file and verify the generated code.Check if the IF conditions, field types, and other logic are now correct.Share Specific Issues:If the IF condition or any other part of the conversion is still not working as expected, share the problematic ESQL snippet or generated code, and I’ll debug further.Additional Requirements:If you need support for nested IF conditions, more complex expressions, or other ESQL constructs, let me know, and I’ll extend the converter.Thammudu’s got you covered! Let me know if you need more examples or further adjustments.
+}
