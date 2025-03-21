@@ -56,9 +56,6 @@ public class EsqlToJavaConverter {
     // Track arrays that need initialization at the start
     private static final Set<String> arraysToInitialize = new HashSet<>();
 
-    // Global set to track initialized paths across all SET statements
-    private static final Set<String> initializedPaths = new HashSet<>();
-
     // Static references to inputClass, outputClass, and envClass for use across methods
     private static ClassStructure inputClass;
     private static ClassStructure outputClass;
@@ -80,7 +77,6 @@ public class EsqlToJavaConverter {
             System.err.println("Error during conversion: " + e.getMessage());
             e.printStackTrace();
         } finally {
-            initializedPaths.clear();
             arraysToInitialize.clear();
             isJsonStream = false;
         }
@@ -261,7 +257,7 @@ public class EsqlToJavaConverter {
         String resolvedValue = resolveReference(value, references);
 
         // Skip assignments involving httpCode, httpMessage, or moreInformation
-        if (!resolvedOutputPath.matches("(OutputRoot\\.(JSON\\.Data|XMLNSC|MRM|DFDL)|Environment|OutBodyRef).*") || resolvedOutputPath.contains("httpCode")
+        if (!resolvedOutputPath.matches("(OutputRoot\\.(JSON\\.Data|XMLNSC)|Environment|OutBodyRef).*") || resolvedOutputPath.contains("httpCode")
                 || resolvedOutputPath.contains("httpMessage") || resolvedOutputPath.contains("moreInformation")
                 || resolvedValue.contains("httpCode") || resolvedValue.contains("httpMessage")
                 || resolvedValue.contains("moreInformation")) {
@@ -293,8 +289,6 @@ public class EsqlToJavaConverter {
         ClassStructure targetClass;
         if (resolvedOutputPath.startsWith("Environment")) {
             targetClass = envClass;
-        } else if (resolvedOutputPath.startsWith("OutBodyRef")) {
-            targetClass = outputClass;
         } else {
             targetClass = outputClass;
         }
@@ -446,12 +440,12 @@ public class EsqlToJavaConverter {
                 maxIterations = getter + " != null ? " + getter + ".size() : 0";
             }
 
-            loop.append("int ").append(loopVar).append(" = ").append(variables.getOrDefault(loopVar, "Integer:1").split(":")[1]).append(";\n")
-                .append("int max").append(capitalize(loopVar)).append(" = ").append(maxIterations).append(";\n")
-                .append("while (").append(loopVar).append(" <= max").append(capitalize(loopVar)).append(") {\n")
+            loop.append("        int ").append(loopVar).append(" = ").append(variables.getOrDefault(loopVar, "Integer:1").split(":")[1]).append(";\n")
+                .append("        int max").append(capitalize(loopVar)).append(" = ").append(maxIterations).append(";\n")
+                .append("        while (").append(loopVar).append(" <= max").append(capitalize(loopVar)).append(") {\n")
                 .append(convertLoopBodyWithCounter(body, null, "output", loopVar, references, variables, classes, 0))
-                .append("    ").append(loopVar).append("++;\n")
-                .append("}\n");
+                .append("            ").append(loopVar).append("++;\n")
+                .append("        }\n");
 
             logicBlocks.add(loop.toString());
         }
@@ -511,16 +505,7 @@ public class EsqlToJavaConverter {
         StringBuilder setterPath = new StringBuilder(root);
 
         // Determine the starting index based on the path
-        int startIndex = 1; // Default for OutputRoot, Environment, or OutBodyRef
-        if (outputPath.contains("XMLNSC")) {
-            startIndex = 2; // Skip "OutputRoot.XMLNSC"
-        } else if (outputPath.contains("JSON.Data")) {
-            startIndex = 3; // Skip "OutputRoot.JSON.Data"
-        } else if (outputPath.contains("MRM") || outputPath.contains("DFDL")) {
-            startIndex = 2; // Skip "OutputRoot.MRM"
-        } else if (outputPath.startsWith("OutBodyRef")) {
-            startIndex = 1; // Skip "OutBodyRef"
-        }
+        int startIndex = outputPath.startsWith("Environment") || outputPath.startsWith("OutBodyRef") ? 1 : 3;
 
         // Build the path without redundant initialization checks
         for (int i = startIndex; i < parts.length - 1; i++) {
@@ -580,9 +565,9 @@ public class EsqlToJavaConverter {
     private static String buildInputGetter(String resolvedValue, String iterator) {
         String[] inputParts = resolvedValue.split("\\.");
         StringBuilder inputGetter = new StringBuilder();
-        int startIndex = resolvedValue.contains("MRM") || resolvedValue.contains("DFDL") ? 2 : resolvedValue.contains("JSON.Data") ? 3 : resolvedValue.contains("XMLNSC") ? 2 : 1;
+        int startIndex = resolvedValue.contains("JSON.Data") ? 3 : resolvedValue.contains("XMLNSC") ? 2 : 1;
 
-        // Build the getter with null and bounds checking
+        // Build the getter with minimal null and bounds checking
         inputGetter.append("((");
         StringBuilder currentPath = new StringBuilder(iterator != null ? iterator : "input");
         for (int i = startIndex; i < inputParts.length; i++) {
@@ -646,14 +631,12 @@ public class EsqlToJavaConverter {
 
         if (fullPath.startsWith("Environment")) {
             processEnvironmentPath(fullPath, classes, rootClass, value);
-        } else if (fullPath.contains("MRM") || fullPath.contains("DFDL")) {
-            processDomainPath(fullPath, classes, rootClass, isOutput, value);
+        } else if (fullPath.startsWith("OutBodyRef")) {
+            processOutBodyRefPath(fullPath, classes, rootClass, isOutput, value);
         } else if (fullPath.contains("JSON.Data")) {
             processJsonPath(fullPath, classes, rootClass, isOutput, value);
         } else if (fullPath.contains("XMLNSC")) {
             processXmlPath(fullPath, classes, rootClass, isOutput, value);
-        } else if (fullPath.startsWith("OutBodyRef")) {
-            processOutBodyRefPath(fullPath, classes, rootClass, isOutput, value);
         }
     }
 
@@ -688,33 +671,32 @@ public class EsqlToJavaConverter {
         }
     }
 
-    private static void processDomainPath(String fullPath, Map<String, ClassStructure> classes, ClassStructure rootClass,
+    private static void processOutBodyRefPath(String fullPath, Map<String, ClassStructure> classes, ClassStructure rootClass,
             boolean isOutput, String value) {
         String[] parts = fullPath.split("\\.");
         ClassStructure currentClass = rootClass;
-        int startIndex = fullPath.contains("JSON.Data") ? 3 : 2;
+        int startIndex = 1; // Start after "OutBodyRef"
 
         for (int i = startIndex; i < parts.length - 1; i++) {
-            if (!parts[i].equals("MRM") && !parts[i].equals("DFDL") && !parts[i].equals("JSON") && !parts[i].equals("Data")) {
-                String fieldName = parts[i].replace("*:", "").toLowerCase();
-                String nextClassName = capitalize(fieldName);
-                if (i == parts.length - 2 && !parts[i + 1].matches("\\w+\\[\\d+\\]")) {
-                    String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
-                    currentClass.addField(fieldName, type);
-                } else if (parts[i + 1].matches("\\w+\\[\\d+\\]")) {
-                    String arrayName = parts[i + 1].substring(0, parts[i + 1].indexOf('[')).toLowerCase();
-                    String arrayClassName = capitalize(arrayName);
-                    currentClass.addField(arrayName, isJsonStream ? "Stream<" + arrayClassName + ">" : "List<" + arrayClassName + ">");
-                    ClassStructure arrayClass = classes.computeIfAbsent(arrayClassName, ClassStructure::new);
-                    currentClass = arrayClass;
-                    break;
-                } else {
-                    ClassStructure nestedClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
-                    currentClass.addField(fieldName, nextClassName);
-                    currentClass = nestedClass;
-                }
+            String fieldName = parts[i].replace("*:", "").toLowerCase();
+            String nextClassName = capitalize(fieldName);
+            if (i == parts.length - 2 && !parts[i + 1].matches("\\w+\\[\\d+\\]")) {
+                String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
+                currentClass.addField(fieldName, type);
+            } else if (parts[i + 1].matches("\\w+\\[\\d+\\]")) {
+                String arrayName = parts[i + 1].substring(0, parts[i + 1].indexOf('[')).toLowerCase();
+                String arrayClassName = capitalize(arrayName);
+                currentClass.addField(arrayName, isJsonStream ? "Stream<" + arrayClassName + ">" : "List<" + arrayClassName + ">");
+                ClassStructure arrayClass = classes.computeIfAbsent(arrayClassName, ClassStructure::new);
+                currentClass = arrayClass;
+                break;
+            } else {
+                ClassStructure nestedClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
+                currentClass.addField(fieldName, nextClassName);
+                currentClass = nestedClass;
             }
         }
+
         if (!parts[parts.length - 1].matches("\\w+\\[\\d+\\]")) {
             String fieldName = parts[parts.length - 1].replace("*:", "").toLowerCase();
             String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
@@ -783,39 +765,6 @@ public class EsqlToJavaConverter {
             type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
         }
         currentClass.addField(fieldName, type);
-    }
-
-    private static void processOutBodyRefPath(String fullPath, Map<String, ClassStructure> classes, ClassStructure rootClass,
-            boolean isOutput, String value) {
-        String[] parts = fullPath.split("\\.");
-        ClassStructure currentClass = rootClass;
-        int startIndex = 1; // Start after "OutBodyRef"
-
-        for (int i = startIndex; i < parts.length - 1; i++) {
-            String fieldName = parts[i].replace("*:", "").toLowerCase();
-            String nextClassName = capitalize(fieldName);
-            if (i == parts.length - 2 && !parts[i + 1].matches("\\w+\\[\\d+\\]")) {
-                String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
-                currentClass.addField(fieldName, type);
-            } else if (parts[i + 1].matches("\\w+\\[\\d+\\]")) {
-                String arrayName = parts[i + 1].substring(0, parts[i + 1].indexOf('[')).toLowerCase();
-                String arrayClassName = capitalize(arrayName);
-                currentClass.addField(arrayName, isJsonStream ? "Stream<" + arrayClassName + ">" : "List<" + arrayClassName + ">");
-                ClassStructure arrayClass = classes.computeIfAbsent(arrayClassName, ClassStructure::new);
-                currentClass = arrayClass;
-                break;
-            } else {
-                ClassStructure nestedClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
-                currentClass.addField(fieldName, nextClassName);
-                currentClass = nestedClass;
-            }
-        }
-
-        if (!parts[parts.length - 1].matches("\\w+\\[\\d+\\]")) {
-            String fieldName = parts[parts.length - 1].replace("*:", "").toLowerCase();
-            String type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
-            currentClass.addField(fieldName, type);
-        }
     }
 
     private static void generateModelClasses(Map<String, Object> parseResult) throws IOException {
@@ -974,7 +923,7 @@ public class EsqlToJavaConverter {
 
     private static String convertValue(String value) {
         if (value.startsWith("'") && value.endsWith("'")) {
-            String val = value.substring(1, value.length - 1);
+            String val = value.substring(1, value.length() - 1);
             if ("true".equalsIgnoreCase(val) || "false".equalsIgnoreCase(val)) return "\"" + val.toUpperCase() + "\"";
             return "\"" + val + "\"";
         }
@@ -1039,24 +988,24 @@ public class EsqlToJavaConverter {
                     String coalesceValue = args[0].trim();
                     String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
                     String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
-                    setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
+                    setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
                 } else if (castMatcher.find()) {
                     String castExpr = castMatcher.group(1).trim();
                     String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
                     String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
-                    setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
+                    setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
                 } else if (dateMatcher.find()) {
                     String dateExpr = dateMatcher.group(1);
                     String format = dateMatcher.group(2);
                     String javaFormat = convertDateFormat(format);
                     String resolvedDateExpr = resolveReference(dateExpr, references);
                     String dateValue = resolvedDateExpr.contains("InputRoot") ? buildInputGetter(resolvedDateExpr, iterator) : convertValue(resolvedDateExpr);
-                    setter = itemVar + ".set" + capitalize(field) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
+                    setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
                 } else {
                     String inputGetter = buildInputGetter(resolvedValue, iterator);
-                    setter = itemVar + ".set" + capitalize(field) + "(" + inputGetter + ");";
+                    setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(" + inputGetter + ");";
                 }
-                result.append("        ").append(setter).append("\n");
+                result.append("            ").append(setter).append("\n");
                 lastPos = setMatcher.end();
             } else if (nextPos == nextIncompleteSetPos) {
                 String outputPath = incompleteSetMatcher.group(1).trim();
@@ -1082,24 +1031,24 @@ public class EsqlToJavaConverter {
                         String coalesceValue = args[0].trim();
                         String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
                         String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
-                        setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
+                        setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
                     } else if (castMatcher.find()) {
                         String castExpr = castMatcher.group(1).trim();
                         String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
                         String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
-                        setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
+                        setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
                     } else if (dateMatcher.find()) {
                         String dateExpr = dateMatcher.group(1);
                         String format = dateMatcher.group(2);
                         String javaFormat = convertDateFormat(format);
                         String resolvedDateExpr = resolveReference(dateExpr, references);
                         String dateValue = resolvedDateExpr.contains("InputRoot") ? buildInputGetter(resolvedDateExpr, iterator) : convertValue(resolvedDateExpr);
-                        setter = itemVar + ".set" + capitalize(field) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
+                        setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(LocalDateTime.parse(" + dateValue + ", DateTimeFormatter.ofPattern(\"" + javaFormat + "\")));";
                     } else {
                         String inputGetter = buildInputGetter(resolvedValue, iterator);
-                        setter = itemVar + ".set" + capitalize(field) + "(" + inputGetter + ");";
+                        setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(" + inputGetter + ");";
                     }
-                    result.append("        ").append(setter).append("\n");
+                    result.append("            ").append(setter).append("\n");
                 }
                 lastPos = incompleteSetMatcher.end();
             } else if (nextPos == nextIfPos) {
@@ -1111,7 +1060,7 @@ public class EsqlToJavaConverter {
                 String conditionExpr = convertCondition(resolvedCondition, iterator, references);
 
                 StringBuilder ifBlock = new StringBuilder();
-                ifBlock.append("        if (").append(conditionExpr).append(") {\n");
+                ifBlock.append("            if (").append(conditionExpr).append(") {\n");
 
                 Matcher thenSetter = LOOP_INDEX_PATTERN.matcher(thenBlock);
                 while (thenSetter.find()) {
@@ -1133,21 +1082,21 @@ public class EsqlToJavaConverter {
                         String coalesceValue = args[0].trim();
                         String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
                         String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
-                        setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
+                        setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
                     } else if (castMatcher.find()) {
                         String castExpr = castMatcher.group(1).trim();
                         String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
                         String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
-                        setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
+                        setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
                     } else {
                         String inputGetter = buildInputGetter(resolvedValue, iterator);
-                        setter = itemVar + ".set" + capitalize(field) + "(" + convertValue(resolvedValue) + ");";
+                        setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(" + convertValue(resolvedValue) + ");";
                     }
-                    ifBlock.append("            ").append(setter).append("\n");
+                    ifBlock.append("                ").append(setter).append("\n");
                 }
 
                 if (elseBlock != null) {
-                    ifBlock.append("        } else {\n");
+                    ifBlock.append("            } else {\n");
                     Matcher elseSetter = LOOP_INDEX_PATTERN.matcher(elseBlock);
                     while (elseSetter.find()) {
                         String field = elseSetter.group(3).toLowerCase();
@@ -1168,20 +1117,20 @@ public class EsqlToJavaConverter {
                             String coalesceValue = args[0].trim();
                             String defaultValue = args.length > 1 ? args[1].trim().replaceAll("'", "\"") : "\"\"";
                             String inputGetter = buildInputGetter(resolveReference(coalesceValue, references), iterator);
-                            setter = itemVar + ".set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
+                            setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(Optional.ofNullable(" + inputGetter + ").orElse(" + defaultValue + "));";
                         } else if (castMatcher.find()) {
                             String castExpr = castMatcher.group(1).trim();
                             String castType = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
                             String inputGetter = buildInputGetter(resolveReference(castExpr, references), iterator);
-                            setter = itemVar + ".set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
+                            setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(" + applyCasting(inputGetter, castType) + ");";
                         } else {
                             String inputGetter = buildInputGetter(resolvedValue, iterator);
-                            setter = itemVar + ".set" + capitalize(field) + "(" + convertValue(resolvedValue) + ");";
+                            setter = itemVar + ".getReqdatrxhbuftbl().getReqDatRxhBuf().get(" + counterVar + " - 1).set" + capitalize(field) + "(" + convertValue(resolvedValue) + ");";
                         }
-                        ifBlock.append("            ").append(setter).append("\n");
+                        ifBlock.append("                ").append(setter).append("\n");
                     }
                 }
-                ifBlock.append("        }\n");
+                ifBlock.append("            }\n");
 
                 result.append(ifBlock);
                 lastPos = ifMatcher.end();
@@ -1190,7 +1139,7 @@ public class EsqlToJavaConverter {
                 processForLoop(forMatcher.group(1), forMatcher.group(2), forMatcher.group(3), nestedLoopBlocks, classes,
                         references, variables, nestingLevel + 1);
                 for (String block : nestedLoopBlocks) {
-                    result.append("        ").append(block.replace("\n", "\n        ")).append("\n");
+                    result.append("            ").append(block.replace("\n", "\n            ")).append("\n");
                 }
                 lastPos = forMatcher.end();
             }
@@ -1230,7 +1179,7 @@ public class EsqlToJavaConverter {
         if (matcher.find()) {
             String rawPath = matcher.group(1).trim();
             String resolvedPath = resolveReference(rawPath, references);
-            if (!resolvedPath.matches("(OutputRoot\\.(JSON\\.Data|XMLNSC|MRM|DFDL)|Environment|OutBodyRef).*")) {
+            if (!resolvedPath.matches("(OutputRoot\\.(JSON\\.Data|XMLNSC)|Environment|OutBodyRef).*")) {
                 resolvedPath = "OutputRoot.JSON.Data." + resolvedPath;
             }
             return resolvedPath;
