@@ -53,6 +53,9 @@ public class EsqlToJavaConverter {
     private static final Pattern INCOMPLETE_SET_PATTERN = Pattern.compile("(?:SET\\s+)?([^=]+)\\s*=\\s*([^;]+);", Pattern.DOTALL);
     private static final Pattern MISSING_SET_PATTERN = Pattern.compile("([^=]+\\s+[^;]+);", Pattern.DOTALL);
 
+    // Track arrays that need initialization at the start
+    private static final Set<String> arraysToInitialize = new HashSet<>();
+
     // Global set to track initialized paths across all SET statements
     private static final Set<String> initializedPaths = new HashSet<>();
 
@@ -78,6 +81,7 @@ public class EsqlToJavaConverter {
             e.printStackTrace();
         } finally {
             initializedPaths.clear();
+            arraysToInitialize.clear();
             isJsonStream = false;
         }
     }
@@ -206,6 +210,7 @@ public class EsqlToJavaConverter {
         result.put("logicBlocks", logicBlocks);
         result.put("procedureBlocks", procedureBlocks);
         result.put("headerKeys", headerKeys);
+        result.put("arraysToInitialize", arraysToInitialize);
         return result;
     }
 
@@ -313,6 +318,12 @@ public class EsqlToJavaConverter {
             }
         }
 
+        // Collect arrays that need initialization
+        if (resolvedOutputPath.contains("[")) {
+            String arrayPath = resolvedOutputPath.substring(0, resolvedOutputPath.lastIndexOf('['));
+            arraysToInitialize.add(arrayPath);
+        }
+
         // Generate setter for the assignment
         String[] outputParts = resolvedOutputPath.split("\\.");
         String outputField = outputParts[outputParts.length - 1].toLowerCase();
@@ -397,78 +408,47 @@ public class EsqlToJavaConverter {
             return;
         }
 
-        // Handle malformed WHILE loops
         String resolvedCondition = condition.trim();
-        String loopVar = "i"; // Default loop variable
-        int maxIterations = 10; // Default max iterations to prevent infinite loops
-        if (resolvedCondition.matches("LASTMOVE\\s*\\((\\w+)\\)")) {
-            String refName = resolvedCondition.replaceAll("LASTMOVE\\s*\\((\\w+)\\)", "$1");
-            String refPath = references.getOrDefault(refName, "");
-            if (!refPath.matches("InputRoot\\.(XML|XMLNSC|MRM|DFDL|JSON\\.Data)(?:\\.\\*:?\\w+)*")) return;
+        String loopVar = "i";
+        String maxIterations = "10"; // Default fallback
 
-            String collectionName = extractCollectionName(refPath, false);
-            String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
-            ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
-
-            inputClass.addField(collectionName, isJsonStream ? "Stream<" + itemClassName + ">" : "List<" + itemClassName + ">");
-
-            String outputCollectionPath = extractOutputCollection(body, references, collectionName);
-            String[] outputParts = outputCollectionPath.split("\\.");
-            String collectionField = outputParts[outputParts.length - 1].toLowerCase();
-
-            Matcher bodyMatcher = LOOP_INDEX_PATTERN.matcher(body);
-            while (bodyMatcher.find()) {
-                String fieldName = bodyMatcher.group(3).toLowerCase();
-                String value = bodyMatcher.group(4).trim();
-                String type = determineFieldType(fieldName, outputCollectionPath, value);
-                if (!fieldName.equals("httpcode") && !fieldName.equals("httpmessage") && !fieldName.equals("moreinformation")) {
-                    Matcher castMatcher = CAST_PATTERN.matcher(value);
-                    if (castMatcher.find()) {
-                        type = TYPE_MAPPING.getOrDefault(castMatcher.group(2).toUpperCase(), "String");
-                    }
-                    itemClass.addField(fieldName, type);
-                }
-            }
-
-            outputClass.addField(collectionField, isJsonStream ? "Stream<" + itemClassName + ">" : "List<" + itemClassName + ">");
-
-            StringBuilder loop = new StringBuilder();
-            String counterVar = detectCounterVariable(body, variables);
-            String counterStart = counterVar != null && variables.containsKey(counterVar) ? variables.get(counterVar).split(":")[1] : "0";
-
-            if (isJsonStream) {
-                loop.append("Stream<").append(itemClassName).append("> ").append(collectionField).append(" = input.get").append(capitalize(collectionName)).append("()\n")
-                    .append("    .map(").append(refName.toLowerCase()).append(" -> {\n")
-                    .append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
-                    .append(convertLoopBodyWithCounter(body, refName.toLowerCase(), "outputItem", counterVar, references, variables, classes, 0))
-                    .append("        return outputItem;\n")
-                    .append("    });\n")
-                    .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
-            } else {
-                loop.append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
-                    .append("int ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = ").append(counterStart).append(";\n")
-                    .append("if (input.get").append(capitalize(collectionName)).append("() != null) {\n")
-                    .append("    for (").append(itemClassName).append(" ").append(refName.toLowerCase()).append(" : input.get").append(capitalize(collectionName)).append("()) {\n")
-                    .append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
-                    .append(convertLoopBodyWithCounter(body, refName.toLowerCase(), "outputItem", counterVar, references, variables, classes, 0))
-                    .append("        ").append(collectionField).append(".add(outputItem);\n")
-                    .append("        ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append("++;\n")
-                    .append("    }\n")
-                    .append("}\n")
-                    .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
-            }
-
-            logicBlocks.add(loop.toString());
-        } else if (resolvedCondition.matches("(\\w+)\\s+<=\\s+(\\w+)")) {
+        if (resolvedCondition.matches("(\\w+)\\s+<=\\s+(\\w+)")) {
             String[] parts = resolvedCondition.split("\\s+<=\\s+");
             loopVar = parts[0].toLowerCase();
             String limitVar = parts[1];
-            String limitValue = variables.getOrDefault(limitVar, "Integer:10").split(":")[1]; // Default to 10 if not set
-            maxIterations = Integer.parseInt(limitValue);
+            String limitValue = variables.getOrDefault(limitVar, "Integer:10").split(":")[1];
+            maxIterations = limitValue;
+
+            // Find the input array size to set the loop boundary
+            Matcher inputMatcher = INPUT_PATTERN.matcher(body);
+            String inputArrayPath = null;
+            while (inputMatcher.find()) {
+                String path = inputMatcher.group(1);
+                if (path.matches(".*\\[" + loopVar.toUpperCase() + "\\]")) {
+                    inputArrayPath = path;
+                    break;
+                }
+            }
 
             StringBuilder loop = new StringBuilder();
+            if (inputArrayPath != null) {
+                String[] pathParts = inputArrayPath.split("\\.");
+                StringBuilder getter = new StringBuilder("input");
+                for (int i = 1; i < pathParts.length; i++) {
+                    String part = pathParts[i].replace("*:", "");
+                    if (part.matches("\\w+\\[\\w+\\]")) {
+                        String arrayName = part.substring(0, part.indexOf('['));
+                        getter.append(".get").append(capitalize(toCamelCase(arrayName))).append("()");
+                    } else {
+                        getter.append(".get").append(capitalize(toCamelCase(part))).append("()");
+                    }
+                }
+                maxIterations = getter + " != null ? " + getter + ".size() : 0";
+            }
+
             loop.append("int ").append(loopVar).append(" = ").append(variables.getOrDefault(loopVar, "Integer:1").split(":")[1]).append(";\n")
-                .append("while (").append(loopVar).append(" <= ").append(maxIterations).append(") {\n")
+                .append("int max").append(capitalize(loopVar)).append(" = ").append(maxIterations).append(";\n")
+                .append("while (").append(loopVar).append(" <= max").append(capitalize(loopVar)).append(") {\n")
                 .append(convertLoopBodyWithCounter(body, null, "output", loopVar, references, variables, classes, 0))
                 .append("    ").append(loopVar).append("++;\n")
                 .append("}\n");
@@ -529,7 +509,6 @@ public class EsqlToJavaConverter {
         String root = outputPath.startsWith("Environment") ? "environment" : "output";
         String[] parts = outputPath.split("\\.");
         StringBuilder setterPath = new StringBuilder(root);
-        StringBuilder initPath = new StringBuilder();
 
         // Determine the starting index based on the path
         int startIndex = 1; // Default for OutputRoot, Environment, or OutBodyRef
@@ -543,55 +522,15 @@ public class EsqlToJavaConverter {
             startIndex = 1; // Skip "OutBodyRef"
         }
 
-        // Build the path and initialize nested objects
+        // Build the path without redundant initialization checks
         for (int i = startIndex; i < parts.length - 1; i++) {
             String part = parts[i].replace("*:", "");
-            String currentPath = String.join(".", Arrays.copyOfRange(parts, 0, i + 1));
             if (part.matches("\\w+\\[\\d+\\]")) {
                 String arrayName = part.substring(0, part.indexOf('['));
                 int index = Integer.parseInt(part.substring(part.indexOf('[') + 1, part.indexOf(']'))) - 1; // Adjust for 0-based indexing
-                String arrayClassName = capitalize(arrayName);
-                String listField = arrayName.toLowerCase();
-                String parentPath = setterPath.toString();
-
-                if (!initializedPaths.contains(currentPath)) {
-                    initPath.append("        if (").append(parentPath).append(".get").append(capitalize(listField))
-                            .append("() == null) {\n");
-                    initPath.append("            ").append(parentPath).append(".set").append(capitalize(listField))
-                            .append(isJsonStream ? "(Stream.empty())" : "(new ArrayList<>())").append(";\n");
-                    initPath.append("        }\n");
-
-                    if (!isJsonStream) {
-                        initPath.append("        while (").append(parentPath).append(".get").append(capitalize(listField))
-                                .append("().size() <= ").append(index).append(") {\n");
-                        initPath.append("            ").append(parentPath).append(".get").append(capitalize(listField))
-                                .append("().add(new ").append(arrayClassName).append("());\n");
-                        initPath.append("        }\n");
-                    }
-
-                    initializedPaths.add(currentPath);
-                }
-
-                if (isJsonStream) {
-                    setterPath.append(".get").append(capitalize(listField)).append("().skip(").append(index).append(").findFirst().orElse(new ").append(arrayClassName).append("())");
-                } else {
-                    setterPath.append(".get").append(capitalize(listField)).append("().get(").append(index).append(")");
-                }
+                setterPath.append(".get").append(capitalize(toCamelCase(arrayName))).append("().get(").append(index).append(")");
             } else {
-                String className = capitalize(part);
-                String fieldName = part.toLowerCase();
-                String parentPath = setterPath.toString();
-
-                if (!initializedPaths.contains(currentPath)) {
-                    initPath.append("        if (").append(parentPath).append(".get").append(capitalize(fieldName))
-                            .append("() == null) {\n");
-                    initPath.append("            ").append(parentPath).append(".set").append(capitalize(fieldName))
-                            .append("(new ").append(className).append("());\n");
-                    initPath.append("        }\n");
-                    initializedPaths.add(currentPath);
-                }
-
-                setterPath.append(".get").append(capitalize(fieldName)).append("()");
+                setterPath.append(".get").append(capitalize(toCamelCase(part))).append("()");
             }
         }
 
@@ -635,30 +574,36 @@ public class EsqlToJavaConverter {
             setterLine = setterPath + ".set" + capitalize(javaFieldName) + "(" + convertedValue + ");";
         }
 
-        return initPath + "        " + setterLine;
+        return "        " + setterLine;
     }
 
     private static String buildInputGetter(String resolvedValue, String iterator) {
         String[] inputParts = resolvedValue.split("\\.");
-        StringBuilder inputGetter = new StringBuilder(iterator != null ? iterator : "input");
+        StringBuilder inputGetter = new StringBuilder();
         int startIndex = resolvedValue.contains("MRM") || resolvedValue.contains("DFDL") ? 2 : resolvedValue.contains("JSON.Data") ? 3 : resolvedValue.contains("XMLNSC") ? 2 : 1;
 
+        // Build the getter with null and bounds checking
+        inputGetter.append("((");
+        StringBuilder currentPath = new StringBuilder(iterator != null ? iterator : "input");
         for (int i = startIndex; i < inputParts.length; i++) {
             String part = inputParts[i].replace("*:", "");
-            if (part.matches("\\w+\\[\\d+\\]")) {
-                String arrayName = part.substring(0, part.indexOf('['));
-                int index = Integer.parseInt(part.substring(part.indexOf('[') + 1, part.indexOf(']'))) - 1; // Adjust for 0-based indexing
-                if (isJsonStream) {
-                    inputGetter.append(".get").append(capitalize(arrayName)).append("().skip(").append(index).append(").findFirst().orElse(null)");
-                } else {
-                    inputGetter.append(".get").append(capitalize(arrayName)).append("().get(").append(index).append(")");
-                }
-            } else if (i == inputParts.length - 1) {
-                inputGetter.append(".get").append(capitalize(toCamelCase(part))).append("()");
-            } else {
-                inputGetter.append(".get").append(capitalize(toCamelCase(part))).append("()");
+            currentPath.append(".get").append(capitalize(toCamelCase(part))).append("()");
+            if (i < inputParts.length - 1) {
+                inputGetter.append(currentPath).append(" != null && ");
             }
         }
+
+        if (inputParts[inputParts.length - 1].matches("\\w+\\[\\d+\\]")) {
+            String arrayName = inputParts[inputParts.length - 1].substring(0, inputParts[inputParts.length - 1].indexOf('['));
+            int index = Integer.parseInt(inputParts[inputParts.length - 1].substring(inputParts[inputParts.length - 1].indexOf('[') + 1, inputParts[inputParts.length - 1].indexOf(']'))) - 1;
+            inputGetter.append(currentPath).append(" != null && ")
+                       .append(currentPath).append(".size() > ").append(index).append(") ? ")
+                       .append(currentPath).append(".get(").append(index).append(") : null)");
+        } else {
+            inputGetter.append(currentPath).append(" != null) ? ")
+                       .append(currentPath).append(" : null)");
+        }
+
         return inputGetter.toString();
     }
 
@@ -783,7 +728,6 @@ public class EsqlToJavaConverter {
         ClassStructure currentClass = rootClass;
         int startIndex = 3; // Start after "InputRoot.JSON.Data" or "OutputRoot.JSON.Data"
 
-        // Build the class structure for nested fields under JSON.Data
         for (int i = startIndex; i < parts.length - 1; i++) {
             String fieldName = parts[i].replace("*:", "").toLowerCase();
             String nextClassName = capitalize(fieldName.replaceAll("s$", ""));
@@ -799,7 +743,6 @@ public class EsqlToJavaConverter {
             }
         }
 
-        // Handle the last part of the path
         String fieldName = parts[parts.length - 1].replace("*:", "").toLowerCase();
         String type;
         if (fieldName.matches("\\w+\\[\\d+\\]")) {
@@ -807,7 +750,7 @@ public class EsqlToJavaConverter {
             String arrayClassName = capitalize(arrayName);
             type = isJsonStream ? "Stream<" + arrayClassName + ">" : "List<" + arrayClassName + ">";
             ClassStructure arrayClass = classes.computeIfAbsent(arrayClassName, ClassStructure::new);
-            arrayClass.addField("value", "String"); // Default field for array items
+            arrayClass.addField("value", "String");
         } else {
             type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
         }
@@ -901,6 +844,7 @@ public class EsqlToJavaConverter {
         List<String> logicBlocks = (List<String>) parseResult.get("logicBlocks");
         Map<String, List<String>> procedureBlocks = (Map<String, List<String>>) parseResult.get("procedureBlocks");
         Set<String> headerKeys = (Set<String>) parseResult.get("headerKeys");
+        Set<String> arraysToInit = (Set<String>) parseResult.get("arraysToInitialize");
 
         StringBuilder mapper = new StringBuilder()
             .append("package ").append(MAPPER_PACKAGE).append(";\n\n")
@@ -925,7 +869,7 @@ public class EsqlToJavaConverter {
         }
 
         mapper.append("    public Output map(Input input, Map<String, String> headers, String requestIdentifier) {\n")
-            .append("        Map<String, String> headersMap = new HashMap<>();\n");
+              .append("        Map<String, String> headersMap = new HashMap<>();\n");
 
         for (String key : headerKeys) {
             mapper.append("        headersMap.put(\"").append(key).append("\", headers.get(\"").append(key).append("\"));\n");
@@ -934,8 +878,46 @@ public class EsqlToJavaConverter {
         mapper.append("        Output output = new Output();\n")
               .append("        Environment environment = new Environment();\n");
 
+        // Initialize all necessary objects and arrays at the start
+        mapper.append("        // Initialize nested objects and arrays\n");
+        if (outputClass.fields.containsKey("reqdatrxhbuftbl")) {
+            mapper.append("        output.setReqdatrxhbuftbl(new Reqdatrxhbuftbl());\n");
+        }
+        if (envClass.fields.containsKey("variables")) {
+            mapper.append("        environment.setVariables(new Variables());\n");
+        }
+
+        // Initialize arrays with sufficient size
+        for (String arrayPath : arraysToInit) {
+            String[] parts = arrayPath.split("\\.");
+            StringBuilder path = new StringBuilder();
+            String root = arrayPath.startsWith("Environment") ? "environment" : "output";
+            int startIndex = arrayPath.startsWith("Environment") || arrayPath.startsWith("OutBodyRef") ? 1 : 3;
+            path.append(root);
+
+            for (int i = startIndex; i < parts.length; i++) {
+                String part = parts[i].replace("*:", "");
+                path.append(".get").append(capitalize(toCamelCase(part))).append("()");
+            }
+
+            // Determine the maximum index needed for this array
+            int maxIndex = 0;
+            Matcher indexMatcher = Pattern.compile(arrayPath + "\\[(\\d+)\\]").matcher(String.join("\n", logicBlocks));
+            while (indexMatcher.find()) {
+                int index = Integer.parseInt(indexMatcher.group(1)) - 1; // Adjust for 0-based indexing
+                maxIndex = Math.max(maxIndex, index);
+            }
+
+            String arrayClassName = capitalize(toCamelCase(parts[parts.length - 1]));
+            mapper.append("        ").append(path).append(" = new ArrayList<>();\n");
+            mapper.append("        for (int i = 0; i <= ").append(maxIndex).append("; i++) {\n");
+            mapper.append("            ").append(path).append(".add(new ").append(arrayClassName).append("());\n");
+            mapper.append("        }\n");
+        }
+
+        // Add logic blocks
         for (String block : logicBlocks) {
-            mapper.append(block);
+            mapper.append(block).append("\n");
         }
 
         for (String procName : procedureBlocks.keySet()) {
@@ -944,8 +926,8 @@ public class EsqlToJavaConverter {
         }
 
         mapper.append("        return output;\n")
-            .append("    }\n")
-            .append("}\n");
+              .append("    }\n")
+              .append("}\n");
 
         writeToFile(OUTPUT_DIR + "DataMapper.java", mapper.toString());
     }
@@ -992,7 +974,7 @@ public class EsqlToJavaConverter {
 
     private static String convertValue(String value) {
         if (value.startsWith("'") && value.endsWith("'")) {
-            String val = value.substring(1, value.length() - 1);
+            String val = value.substring(1, value.length - 1);
             if ("true".equalsIgnoreCase(val) || "false".equalsIgnoreCase(val)) return "\"" + val.toUpperCase() + "\"";
             return "\"" + val + "\"";
         }
