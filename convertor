@@ -1,10 +1,3 @@
-Below is the final version of the `EsqlToJavaConverter.java` class, incorporating all the fixes and updates we discussed. This version resolves the syntax errors for `classes` and `nestingLevel` around line 990, ensures proper parameter passing, and maintains the functionality for converting ESQL scripts to Java, including handling nested loops, flattened paths, and other ESQL constructs.
-
----
-
-### Final `EsqlToJavaConverter.java`
-
-```java
 package complexesqloJava;
 
 import java.io.BufferedReader;
@@ -66,6 +59,9 @@ public class EsqlToJavaConverter {
     private static ClassStructure outputClass;
     private static ClassStructure envClass;
 
+    // Flag to track if the input is a JSON stream
+    private static boolean isJsonStream = false;
+
     public static void main(String[] args) {
         String esqlFilePath = args.length > 0 ? args[0] : "input.esql";
         try {
@@ -80,6 +76,7 @@ public class EsqlToJavaConverter {
             e.printStackTrace();
         } finally {
             initializedPaths.clear();
+            isJsonStream = false;
         }
     }
 
@@ -107,6 +104,11 @@ public class EsqlToJavaConverter {
         inputClass = classes.computeIfAbsent("Input", ClassStructure::new);
         outputClass = classes.computeIfAbsent("Output", ClassStructure::new);
         envClass = classes.computeIfAbsent("Environment", ClassStructure::new);
+
+        // Check if the script indicates JSON streaming (e.g., WHILE LASTMOVE on JSON.Data)
+        if (esqlScript.contains("WHILE LASTMOVE") && esqlScript.contains("JSON.Data")) {
+            isJsonStream = true;
+        }
 
         // Parse DECLARE statements for variables
         Matcher declareMatcher = DECLARE_PATTERN.matcher(esqlScript);
@@ -288,7 +290,7 @@ public class EsqlToJavaConverter {
         ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
 
         ClassStructure parentClass = nestingLevel == 0 ? inputClass : classes.get(capitalize(extractCollectionName(resolveReference(collectionPath.split("\\.")[0], references), true).replaceAll("s$", "")));
-        parentClass.addField(collectionName, "List<" + itemClassName + ">");
+        parentClass.addField(collectionName, isJsonStream ? "Stream<" + itemClassName + ">" : "List<" + itemClassName + ">");
 
         String outputCollectionPath = extractOutputCollection(body, references, collectionName);
         String[] outputParts = outputCollectionPath.split("\\.");
@@ -309,7 +311,7 @@ public class EsqlToJavaConverter {
         }
 
         if (nestingLevel == 0) {
-            outputClass.addField(collectionField, "List<" + itemClassName + ">");
+            outputClass.addField(collectionField, isJsonStream ? "Stream<" + itemClassName + ">" : "List<" + itemClassName + ">");
         }
 
         StringBuilder loop = new StringBuilder();
@@ -317,16 +319,28 @@ public class EsqlToJavaConverter {
         String counterVar = detectCounterVariable(body, variables);
         String counterStart = counterVar != null && variables.containsKey(counterVar) ? variables.get(counterVar).split(":")[1] : "0";
 
-        loop.append(indent).append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
-            .append(indent).append("if (").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("() != null) {\n")
-            .append(indent).append("    int ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = ").append(counterStart).append(";\n")
-            .append(indent).append("    for (").append(itemClassName).append(" ").append(iterator).append(" : ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("()) {\n")
-            .append(indent).append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
-            .append(convertLoopBodyWithCounter(body, iterator, "outputItem", counterVar, references, variables, classes, nestingLevel))
-            .append(indent).append("        ").append(collectionField).append(".add(outputItem);\n")
-            .append(indent).append("        ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append("++;\n")
-            .append(indent).append("    }\n")
-            .append(indent).append("}\n");
+        if (isJsonStream) {
+            // Use Java Stream for JSON streaming
+            loop.append(indent).append("Stream<").append(itemClassName).append("> ").append(collectionField).append(" = ")
+                .append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("()\n")
+                .append(indent).append("    .map(").append(iterator).append(" -> {\n")
+                .append(indent).append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
+                .append(convertLoopBodyWithCounter(body, iterator, "outputItem", counterVar, references, variables, classes, nestingLevel))
+                .append(indent).append("        return outputItem;\n")
+                .append(indent).append("    });\n");
+        } else {
+            // Use List for non-streaming
+            loop.append(indent).append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
+                .append(indent).append("if (").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("() != null) {\n")
+                .append(indent).append("    int ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = ").append(counterStart).append(";\n")
+                .append(indent).append("    for (").append(itemClassName).append(" ").append(iterator).append(" : ").append(nestingLevel == 0 ? "input" : iterator).append(".get").append(capitalize(collectionName)).append("()) {\n")
+                .append(indent).append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
+                .append(convertLoopBodyWithCounter(body, iterator, "outputItem", counterVar, references, variables, classes, nestingLevel))
+                .append(indent).append("        ").append(collectionField).append(".add(outputItem);\n")
+                .append(indent).append("        ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append("++;\n")
+                .append(indent).append("    }\n")
+                .append(indent).append("}\n");
+        }
 
         if (nestingLevel == 0) {
             loop.append(indent).append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
@@ -348,7 +362,7 @@ public class EsqlToJavaConverter {
         String itemClassName = capitalize(collectionName.replaceAll("s$", ""));
         ClassStructure itemClass = classes.computeIfAbsent(itemClassName, ClassStructure::new);
 
-        inputClass.addField(collectionName, "List<" + itemClassName + ">");
+        inputClass.addField(collectionName, isJsonStream ? "Stream<" + itemClassName + ">" : "List<" + itemClassName + ">");
 
         String outputCollectionPath = extractOutputCollection(body, references, collectionName);
         String[] outputParts = outputCollectionPath.split("\\.");
@@ -368,23 +382,35 @@ public class EsqlToJavaConverter {
             }
         }
 
-        outputClass.addField(collectionField, "List<" + itemClassName + ">");
+        outputClass.addField(collectionField, isJsonStream ? "Stream<" + itemClassName + ">" : "List<" + itemClassName + ">");
 
         StringBuilder loop = new StringBuilder();
         String counterVar = detectCounterVariable(body, variables);
         String counterStart = counterVar != null && variables.containsKey(counterVar) ? variables.get(counterVar).split(":")[1] : "0";
 
-        loop.append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
-            .append("int ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = ").append(counterStart).append(";\n")
-            .append("if (input.get").append(capitalize(collectionName)).append("() != null) {\n")
-            .append("    for (").append(itemClassName).append(" ").append(refName.toLowerCase()).append(" : input.get").append(capitalize(collectionName)).append("()) {\n")
-            .append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
-            .append(convertLoopBodyWithCounter(body, refName.toLowerCase(), "outputItem", counterVar, references, variables, classes, 0))
-            .append("        ").append(collectionField).append(".add(outputItem);\n")
-            .append("        ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append("++;\n")
-            .append("    }\n")
-            .append("}\n")
-            .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+        if (isJsonStream) {
+            // Use Java Stream for JSON streaming
+            loop.append("Stream<").append(itemClassName).append("> ").append(collectionField).append(" = input.get").append(capitalize(collectionName)).append("()\n")
+                .append("    .map(").append(refName.toLowerCase()).append(" -> {\n")
+                .append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
+                .append(convertLoopBodyWithCounter(body, refName.toLowerCase(), "outputItem", counterVar, references, variables, classes, 0))
+                .append("        return outputItem;\n")
+                .append("    });\n")
+                .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+        } else {
+            // Use List for non-streaming
+            loop.append("List<").append(itemClassName).append("> ").append(collectionField).append(" = new ArrayList<>();\n")
+                .append("int ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append(" = ").append(counterStart).append(";\n")
+                .append("if (input.get").append(capitalize(collectionName)).append("() != null) {\n")
+                .append("    for (").append(itemClassName).append(" ").append(refName.toLowerCase()).append(" : input.get").append(capitalize(collectionName)).append("()) {\n")
+                .append("        ").append(itemClassName).append(" outputItem = new ").append(itemClassName).append("();\n")
+                .append(convertLoopBodyWithCounter(body, refName.toLowerCase(), "outputItem", counterVar, references, variables, classes, 0))
+                .append("        ").append(collectionField).append(".add(outputItem);\n")
+                .append("        ").append(counterVar != null ? counterVar.toLowerCase() : "counter").append("++;\n")
+                .append("    }\n")
+                .append("}\n")
+                .append("output.set").append(capitalize(collectionField)).append("(").append(collectionField).append(");");
+        }
 
         logicBlocks.add(loop.toString());
     }
@@ -468,19 +494,25 @@ public class EsqlToJavaConverter {
                     initPath.append("        if (").append(parentPath).append(".get").append(capitalize(listField))
                             .append("() == null) {\n");
                     initPath.append("            ").append(parentPath).append(".set").append(capitalize(listField))
-                            .append("(new ArrayList<>()));\n");
+                            .append(isJsonStream ? "(Stream.empty())" : "(new ArrayList<>())").append(";\n");
                     initPath.append("        }\n");
 
-                    initPath.append("        while (").append(parentPath).append(".get").append(capitalize(listField))
-                            .append("().size() <= ").append(index).append(") {\n");
-                    initPath.append("            ").append(parentPath).append(".get").append(capitalize(listField))
-                            .append("().add(new ").append(arrayClassName).append("());\n");
-                    initPath.append("        }\n");
+                    if (!isJsonStream) {
+                        initPath.append("        while (").append(parentPath).append(".get").append(capitalize(listField))
+                                .append("().size() <= ").append(index).append(") {\n");
+                        initPath.append("            ").append(parentPath).append(".get").append(capitalize(listField))
+                                .append("().add(new ").append(arrayClassName).append("());\n");
+                        initPath.append("        }\n");
+                    }
 
                     initializedPaths.add(currentPath);
                 }
 
-                setterPath.append(".get").append(capitalize(listField)).append("().get(").append(index).append(")");
+                if (isJsonStream) {
+                    setterPath.append(".get").append(capitalize(listField)).append("().skip(").append(index).append(").findFirst().orElse(new ").append(arrayClassName).append("())");
+                } else {
+                    setterPath.append(".get").append(capitalize(listField)).append("().get(").append(index).append(")");
+                }
             } else {
                 String className = capitalize(part);
                 String fieldName = part.toLowerCase();
@@ -545,17 +577,18 @@ public class EsqlToJavaConverter {
     private static String buildInputGetter(String resolvedValue, String iterator) {
         String[] inputParts = resolvedValue.split("\\.");
         StringBuilder inputGetter = new StringBuilder(iterator != null ? iterator : "input");
-        int startIndex = resolvedValue.contains("MRM") || resolvedValue.contains("DFDL") ? 2 : 3;
-        if (resolvedValue.contains("JSON.Data")) startIndex = 3;
-        if (resolvedValue.contains("XMLNSC")) startIndex = 2;
-        if (resolvedValue.contains("MQRFH2")) startIndex = 1;
+        int startIndex = resolvedValue.contains("MRM") || resolvedValue.contains("DFDL") ? 2 : resolvedValue.contains("JSON.Data") ? 3 : resolvedValue.contains("XMLNSC") ? 2 : 1;
 
         for (int i = startIndex; i < inputParts.length; i++) {
             String part = inputParts[i].replace("*:", "");
             if (part.matches("\\w+\\[\\d+\\]")) {
                 String arrayName = part.substring(0, part.indexOf('['));
                 int index = Integer.parseInt(part.substring(part.indexOf('[') + 1, part.indexOf(']'))) - 1; // Adjust for 0-based indexing
-                inputGetter.append(".get").append(capitalize(arrayName)).append("().get(").append(index).append(")");
+                if (isJsonStream) {
+                    inputGetter.append(".get").append(capitalize(arrayName)).append("().skip(").append(index).append(").findFirst().orElse(null)");
+                } else {
+                    inputGetter.append(".get").append(capitalize(arrayName)).append("().get(").append(index).append(")");
+                }
             } else if (i == inputParts.length - 1) {
                 inputGetter.append(".get").append(capitalize(part)).append("()");
             } else {
@@ -638,7 +671,7 @@ public class EsqlToJavaConverter {
             String arrayPart = parts[parts.length - 1];
             String arrayName = arrayPart.substring(0, arrayPart.indexOf('[')).toLowerCase();
             String arrayClassName = capitalize(arrayName);
-            currentClass.addField(arrayName, "List<" + arrayClassName + ">");
+            currentClass.addField(arrayName, isJsonStream ? "Stream<" + arrayClassName + ">" : "List<" + arrayClassName + ">");
             ClassStructure arrayClass = classes.computeIfAbsent(arrayClassName, ClassStructure::new);
             arrayClass.addField(parts[parts.length - 1].replace("*:", "").toLowerCase(), "String");
         }
@@ -660,7 +693,7 @@ public class EsqlToJavaConverter {
                 } else if (parts[i + 1].matches("\\w+\\[\\d+\\]")) {
                     String arrayName = parts[i + 1].substring(0, parts[i + 1].indexOf('[')).toLowerCase();
                     String arrayClassName = capitalize(arrayName);
-                    currentClass.addField(arrayName, "List<" + arrayClassName + ">");
+                    currentClass.addField(arrayName, isJsonStream ? "Stream<" + arrayClassName + ">" : "List<" + arrayClassName + ">");
                     ClassStructure arrayClass = classes.computeIfAbsent(arrayClassName, ClassStructure::new);
                     currentClass = arrayClass;
                     break;
@@ -684,13 +717,29 @@ public class EsqlToJavaConverter {
         ClassStructure currentClass = rootClass;
         int startIndex = 3; // Start after "InputRoot.JSON.Data" or "OutputRoot.JSON.Data"
 
-        // Flatten the path: treat the last part (e.g., "record") as a direct field of the root class
+        // Build the class structure for nested fields under JSON.Data
+        for (int i = startIndex; i < parts.length - 1; i++) {
+            String fieldName = parts[i].replace("*:", "").toLowerCase();
+            String nextClassName = capitalize(fieldName.replaceAll("s$", ""));
+            if (parts[i].matches("\\w+\\[\\d+\\]")) {
+                String arrayName = fieldName.substring(0, fieldName.indexOf('['));
+                String arrayClassName = capitalize(arrayName);
+                currentClass.addField(arrayName, isJsonStream ? "Stream<" + arrayClassName + ">" : "List<" + arrayClassName + ">");
+                currentClass = classes.computeIfAbsent(arrayClassName, ClassStructure::new);
+            } else {
+                ClassStructure nestedClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
+                currentClass.addField(fieldName, nextClassName);
+                currentClass = nestedClass;
+            }
+        }
+
+        // Handle the last part of the path
         String fieldName = parts[parts.length - 1].replace("*:", "").toLowerCase();
         String type;
         if (fieldName.matches("\\w+\\[\\d+\\]")) {
             String arrayName = fieldName.substring(0, fieldName.indexOf('[')).toLowerCase();
             String arrayClassName = capitalize(arrayName);
-            type = "List<" + arrayClassName + ">";
+            type = isJsonStream ? "Stream<" + arrayClassName + ">" : "List<" + arrayClassName + ">";
             ClassStructure arrayClass = classes.computeIfAbsent(arrayClassName, ClassStructure::new);
             arrayClass.addField("value", "String"); // Default field for array items
         } else {
@@ -705,7 +754,14 @@ public class EsqlToJavaConverter {
         ClassStructure currentClass = rootClass;
         int startIndex = 2; // Start after "InputRoot.XMLNSC" or "OutputRoot.XMLNSC"
 
-        // Flatten the path: treat the last part (e.g., "record") as a direct field of the root class
+        for (int i = startIndex; i < parts.length - 1; i++) {
+            String fieldName = parts[i].replace("*:", "").toLowerCase();
+            String nextClassName = capitalize(fieldName);
+            ClassStructure nestedClass = classes.computeIfAbsent(nextClassName, ClassStructure::new);
+            currentClass.addField(fieldName, nextClassName);
+            currentClass = nestedClass;
+        }
+
         String fieldName = parts[parts.length - 1].replace("*:", "").toLowerCase();
         String type;
         if (fieldName.matches("\\w+\\[\\d+\\]")) {
@@ -713,7 +769,7 @@ public class EsqlToJavaConverter {
             String arrayClassName = capitalize(arrayName);
             type = "List<" + arrayClassName + ">";
             ClassStructure arrayClass = classes.computeIfAbsent(arrayClassName, ClassStructure::new);
-            arrayClass.addField("value", "String"); // Default field for array items
+            arrayClass.addField("value", "String");
         } else {
             type = value instanceof String && TYPE_MAPPING.containsValue(value) ? value : determineFieldType(fieldName, fullPath, value);
         }
@@ -728,8 +784,9 @@ public class EsqlToJavaConverter {
             StringBuilder content = new StringBuilder()
                 .append("package ").append(MODEL_PACKAGE).append(";\n\n")
                 .append("import lombok.Data;\n")
-                .append("import java.util.List;\n")
-                .append("import java.time.LocalDateTime;\n\n")
+                .append("import java.util.*;\n")
+                .append("import java.time.LocalDateTime;\n")
+                .append("import java.util.stream.Stream;\n\n") // Added for Stream support
                 .append("@Data\n")
                 .append("public class ").append(cls.name).append(" {\n");
 
@@ -750,11 +807,15 @@ public class EsqlToJavaConverter {
             .append("package ").append(MAPPER_PACKAGE).append(";\n\n")
             .append("import ").append(MODEL_PACKAGE).append(".*;\n")
             .append("import java.util.*;\n")
-            .append("import java.util.stream.Collectors;\n")
-            .append("import java.util.stream.Stream;\n")
+            .append("import java.util.stream.*;\n")
             .append("import java.time.LocalDateTime;\n")
-            .append("import java.time.format.DateTimeFormatter;\n\n")
+            .append("import java.time.format.DateTimeFormatter;\n")
+            .append("import com.fasterxml.jackson.databind.JsonNode;\n")
+            .append("import com.fasterxml.jackson.databind.ObjectMapper;\n\n")
             .append("public class DataMapper {\n");
+
+        // Add ObjectMapper for JSON parsing
+        mapper.append("    private final ObjectMapper objectMapper = new ObjectMapper();\n\n");
 
         for (Map.Entry<String, List<String>> entry : procedureBlocks.entrySet()) {
             String methodName = entry.getKey().substring(0, 1).toLowerCase() + entry.getKey().substring(1);
@@ -1074,191 +1135,3 @@ public class EsqlToJavaConverter {
                 .replace("%B", "MMMM").replace("%p", "a").replace("%z", "Z").replace("%Z", "z");
     }
 }
-```
-
----
-
-### Key Fixes and Features
-
-1. **Syntax Errors Resolved**:
-   - The `convertLoopBodyWithCounter` method now accepts `classes` and `nestingLevel` as parameters, resolving the "cannot be resolved" errors around line 990.
-   - Calls to `convertLoopBodyWithCounter` in `processForLoop` and `processWhileLoop` pass the required `classes` and `nestingLevel` parameters.
-
-2. **Nested Loop Handling**:
-   - The script correctly handles nested `FOR` loops by incrementing the `nestingLevel` and passing it to `processForLoop`, ensuring proper indentation and scoping in the generated Java code.
-
-3. **Flattened Path Mapping**:
-   - Paths like `InputRoot.JSON.Data.record` are mapped to `input.getRecord()`, and `OutputRoot.JSON.Data.record` are mapped to `output.getRecord()`, as required.
-
-4. **Comprehensive ESQL Support**:
-   - The script supports various ESQL constructs, including `SET` statements, `FOR` and `WHILE` loops, `DECLARE` statements, `CAST`, `COALESCE`, `DATE_FORMAT`, and more.
-   - It generates appropriate Java model classes (`Input`, `Output`, `Environment`, and nested classes) and a `DataMapper` class for mapping logic.
-
-5. **Error Handling and Edge Cases**:
-   - The script skips assignments involving `httpCode`, `httpMessage`, or `moreInformation` to avoid generating unnecessary code.
-   - It handles array indexing (e.g., `Item[I]`) and initializes nested objects as needed.
-
----
-
-### How to Use
-
-1. **Save the Script**:
-   - Save the above code as `EsqlToJavaConverter.java` in a directory under the package `complexesqloJava`.
-
-2. **Prepare an ESQL File**:
-   - Create an ESQL script (e.g., `input.esql`) with your ESQL code. For example:
-     ```sql
-     DECLARE I INTEGER 1;
-
-     FOR item AS InputRoot.JSON.Data.items[] DO
-         SET OutputRoot.JSON.Data.items[I].name = item.name;
-         FOR subItem AS item.subItems[] DO
-             SET OutputRoot.JSON.Data.items[I].subItems[I].value = subItem.value;
-             SET I = I + 1;
-         END FOR;
-     END FOR;
-     ```
-
-3. **Run the Converter**:
-   - Compile and run the script, passing the path to your ESQL file as an argument:
-     ```bash
-     javac complexesqloJava/EsqlToJavaConverter.java
-     java complexesqloJava.EsqlToJavaConverter input.esql
-     ```
-   - This will generate Java files in the `generated/` directory, including model classes (`Input.java`, `Output.java`, etc.) and the `DataMapper.java` class.
-
-4. **Verify the Output**:
-   - Check the generated files to ensure they match your expectations. The `DataMapper.java` file will contain the mapping logic, and the model classes will define the structure of your data.
-
----
-
-### Dependencies
-
-The generated Java code relies on the following dependencies:
-- **Lombok**: For the `@Data` annotation to generate getters, setters, and other boilerplate code.
-- **Java Standard Library**: For `java.util.*`, `java.time.*`, and other standard classes.
-
-Ensure you have Lombok set up in your project (e.g., by adding it to your build tool like Maven or Gradle) if you plan to compile and use the generated Java code.
-
----
-
-### Example Output
-
-For the ESQL script above, the generated files will look like this:
-
-- **`Input.java`**:
-```java
-package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Input {
-    private List<Item> items;
-}
-```
-
-- **`Output.java`**:
-```java
-package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Output {
-    private List<Item> items;
-}
-```
-
-- **`Item.java`**:
-```java
-package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Item {
-    private String name;
-    private List<SubItem> subItems;
-}
-```
-
-- **`SubItem.java`**:
-```java
-package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class SubItem {
-    private String value;
-}
-```
-
-- **`Environment.java`**:
-```java
-package com.example.model;
-
-import lombok.Data;
-import java.util.List;
-import java.time.LocalDateTime;
-
-@Data
-public class Environment {
-}
-```
-
-- **`DataMapper.java`**:
-```java
-package com.example.mapper;
-
-import com.example.model.*;
-import java.util.*;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-
-public class DataMapper {
-    public Output map(Input input, Map<String, String> headers, String requestIdentifier) {
-        Map<String, String> headersMap = new HashMap<>();
-        Output output = new Output();
-        Environment environment = new Environment();
-        List<Item> items = new ArrayList<>();
-        if (input.getItems() != null) {
-            int i = 1;
-            for (Item item : input.getItems()) {
-                Item outputItem = new Item();
-                outputItem.setName(item.getName());
-                List<SubItem> subItems = new ArrayList<>();
-                if (item.getSubItems() != null) {
-                    for (SubItem subItem : item.getSubItems()) {
-                        SubItem outputItem2 = new SubItem();
-                        outputItem2.setValue(subItem.getValue());
-                        subItems.add(outputItem2);
-                        i++;
-                    }
-                }
-                outputItem.setSubItems(subItems);
-                items.add(outputItem);
-            }
-        }
-        output.setItems(items);
-        return output;
-    }
-}
-```
-
----
-
-### Final Notes
-
-This final version of the `EsqlToJavaConverter` class is fully functional and should handle your ESQL scripts correctly, including nested loops and other complex constructs. If you encounter any issues or need further enhancements (e.g., support for additional ESQL features), feel free to let me know, and I’ll assist with further updates!
