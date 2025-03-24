@@ -1,0 +1,186 @@
+The error you’re seeing indicates that the `SentencePiece` library, which is a dependency for the `T5Tokenizer` used by CodeT5, is missing in your Python environment. This is a common requirement for transformer models like CodeT5 that rely on SentencePiece for tokenization. Since you’re new to Python, I’ll guide you step-by-step to fix this and get your `train_codet5.py` script running successfully.
+
+---
+
+### Why This Happened
+- `T5Tokenizer` (from the `transformers` library) uses `SentencePiece` to process text into tokens, but it wasn’t installed when you set up your environment.
+- The error message suggests installing `SentencePiece` and possibly restarting your runtime (in this case, your terminal).
+
+---
+
+### Step-by-Step Fix
+#### 1. Verify Your Environment
+- You’re in the correct folder (`C:\Users\z313579\Desktop\iib-spring-ai`) and your virtual environment is active (you see `(venv)` in the prompt).
+- PyTorch 2.3.1+cpu is installed correctly (confirmed by your earlier `2.3.1+cpu` output).
+
+#### 2. Install SentencePiece
+- In your active virtual environment, install `SentencePiece`:
+  - Run: `pip install sentencepiece==0.2.0`
+  - This installs version 0.2.0, which is compatible with `transformers==4.41.2`.
+
+#### 3. Verify Installation
+- Check that `SentencePiece` is installed:
+  - Run: `pip list | findstr sentencepiece` (Windows) or `pip list | grep sentencepiece` (Mac/Linux).
+  - You should see: `sentencepiece 0.2.0`.
+- Test it in Python:
+  - Run: `python -c "import sentencepiece; print(sentencepiece.__version__)"`.
+  - Expected output: `0.2.0`.
+
+#### 4. Fix Your Training Script
+- Your script has a typo (`train_codet5.py` was referenced as `train_codets.py` in the error, and there’s a syntax error in the posted snippet). Let’s ensure you’re using the correct, complete version:
+- Open `train_codet5.py` in a text editor (e.g., Notepad or VS Code) and replace its contents with this corrected version:
+```python
+from transformers import T5Tokenizer, T5ForConditionalGeneration, Trainer, TrainingArguments
+from datasets import Dataset
+import os
+
+# Load tokenizer and model
+tokenizer = T5Tokenizer.from_pretrained("Salesforce/codet5-base")
+model = T5ForConditionalGeneration.from_pretrained("Salesforce/codet5-base")
+
+# Prepare dataset
+input_dir = "training-data/input"
+output_dir = "training-data/output"
+data = []
+
+for folder in os.listdir(input_dir):
+    iib_files = os.path.join(input_dir, folder)
+    spring_files = os.path.join(output_dir, folder)
+    
+    # Combine IIB files into one input string
+    iib_content = ""
+    for file in os.listdir(iib_files):
+        with open(os.path.join(iib_files, file), "r", encoding="utf-8") as f:
+            iib_content += f"--- {file} ---\n{f.read()}\n"
+    
+    # Combine Spring Boot files from subfolders
+    spring_content = ""
+    for subfolder in ["controllers", "services", "services", "models", "models", "connect", "connectors"]:
+        subors"]:
+        subfolder_path = osfolder_path = os.path.join(spring_files.path.join(spring_files, subfolder)
+        if, subfolder)
+        if os os.path.exists(subfolder.path.exists(subfolder_path):
+_path):
+            for            for file in os file in os.listdir(subfolder.listdir(subfolder_path):
+_path):
+                               with open with open(os(os.path.join.path.join(sub(subfolder_path, file), "folder_path, file), "r", encodingr", encoding="utf-8")="utf-8") as f:
+                    spring as f:
+                    spring_content += f"---_content += f"--- {subfolder}/{ {subfolder}/{file} --file} ---\n{f.read-\n{f.read()}\n"
+()}\n"
+    
+       
+    data data.append({"input": i.append({"input": iib_content, "ib_content, "output": springoutput": spring_content})
+
+# Convert_content})
+
+# Convert to Dataset
+dataset to Dataset
+dataset = Dataset = Dataset.from_list(data)
+
+.from_list(data)
+
+# Token# Tokenize data
+def preprocess(exize data
+def preprocess(examples):
+    inputsamples):
+    inputs = tokenizer = tokenizer(examples["(examples["input"], paddinginput"], padding="max_length", truncation="max_length", truncation=True, max=True, max_length=512_length=512)
+   )
+    outputs = tokenizer outputs = tokenizer(ex(examples["outputamples["output"], padding"], padding="max_length="max", truncation_length", truncation=True, max_length=204=True, max_length=2048)
+8)
+    inputs    inputs["labels"] =["labels"] = outputs["input outputs["input_ids_ids"]
+    return"]
+    return inputs inputs
+
+token
+
+tokenized_datasetized_dataset = dataset = dataset.map(preprocess,.map(preprocess, batched=True)
+
+# Training batched=True)
+
+# Training arguments
+training_args = Training arguments
+training_args = TrainingArguments(
+    outputArguments(
+    output_dir="./model_dir="./model-output",
+    num-output",
+    num_train_epochs=50,
+   _train_epochs=50,
+    per_device per_device_train_batch_size_train_batch_size=1=1,
+   ,
+    warmup warmup_steps=5_steps=5,,
+   
+    weight weight_decay=_decay=00.01,
+    logging.01,
+    logging_dir="./_dir="./logs",
+    logging_stepslogs",
+    logging_steps=5=5,
+,
+       save_strategy="epoch",
+ save_strategy="epoch",
+    evaluation    evaluation_strategy="no_strategy="no",
+)
+
+# Trainer",
+)
+
+# Trainer
+trainer
+trainer = Trainer = Trainer(
+    model=model(
+    model=model,
+   ,
+    args=training args=training_args_args,
+   ,
+    train train_dataset=token_dataset=tokenized_dataset,
+)
+
+# Trainized_dataset,
+)
+
+# Train
+trainer
+trainer.train()
+
+#.train()
+ Save model
+# Save model
+model
+model.save_pretrained("./.save_pretrained("./trainedtrained-codet5")
+tokenizer-codet5")
+tokenizer.save_pretrained("./trained.save_pretrained("./trained-codet5")
+
+print-codet5")
+
+print("Training complete. Model("Training complete. Model saved in saved in ./trained ./trained-codet5")
+```
+-codet5")
+```
+- Save the file.
+
+- Save the file.
+
+#### 5. Run#### 5. Run the Training the Training Script Again Script Again
+- Ensure your terminal
+- Ensure your terminal is in is in `C `C:\Users\z:\Users\z313579\Desktop313579\Desktop\iib\iib-spring-ai-spring-ai` with` with `(venv)` `(venv)` active.
+- Run: active.
+- Run: `python train_cod `python train_codet5.py`.
+- Whatet5.py`.
+- What to expect:
+  - It to expect:
+  - It will will download the Code download the CodeT5 model (~T5 model (~900 MB)900 MB) if not if not already downloaded.
+  - Training already downloaded.
+  - Training will start will start, showing loss, showing loss values every 5 steps values every 5 steps (e.g (e.g., `{'., `{'loss': Xloss': X..XX, 'stepXX, 'step': 5}`).
+': 5}`).
+  - It takes  - It takes 30 30-60 minutes on a CPU-60 minutes on a CPU.
+  - After finishing.
+  - After finishing, you, you’ll see:’ll see: `Training complete. Model saved `Training complete. Model saved in ./trained in ./trained-codet5`.
+
+####-codet5`.
+
+#### 6. Trou 6. Troubleshoot If Neededbleshoot If Needed
+- **
+- **If itIf it still fails** still fails**:
+:
+  - Check for  - Check for typos in the typos in the script name: script name: Use Use `train `train_codet_codet5.py`,5.py`, not `train not `train_cod_codets.py`.
+  - Ensureets.py`.
+  - Ensure your your training data is training data is
