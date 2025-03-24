@@ -1,1 +1,507 @@
+I’m glad you’re on board with this approach! Since you’re new to Python, I’ll provide a detailed, beginner-friendly, step-by-step guide to set up, train, and deploy the CodeT5 model for your IIB-to-Spring Boot conversion, ensuring it handles your complex requirements (folder-wise components, `@FixedLengthRecord`, variable packages, and new annotations). After training, it will generate all necessary Spring Boot components based on your 10 samples. I’ll break it down into clear steps with explanations and commands.
 
+---
+
+### Overview
+1. **Set Up Environment**: Install Python tools and dependencies.
+2. **Prepare Samples**: Structure your 10 samples correctly.
+3. **Train CodeT5**: Fine-tune the model in Python.
+4. **Create Flask API**: Build a Python service for inference.
+5. **Set Up Spring Boot**: Deploy in STS with a REST API.
+6. **Test the Solution**: Generate code for new IIB files.
+
+---
+
+### Step 1: Set Up Python Environment
+Since you’ve installed Python 3.12.5, let’s set up everything you need.
+
+1. **Create Project Folder**:
+   - On your computer, create a folder called `iib-spring-ai`:
+     - Windows: Right-click Desktop > New > Folder > Name it `iib-spring-ai`.
+     - Mac/Linux: Open terminal, run `mkdir ~/iib-spring-ai`.
+   - Open a terminal/command prompt:
+     - Windows: Press `Win + R`, type `cmd`, press Enter, then `cd C:\path\to\iib-spring-ai`.
+     - Mac/Linux: `cd ~/iib-spring-ai`.
+
+2. **Set Up Virtual Environment**:
+   - A virtual environment keeps Python packages isolated.
+   - In the terminal:
+     - `python -m venv venv`
+   - Activate it:
+     - Windows: `venv\Scripts\activate` (You’ll see `(venv)` in the prompt).
+     - Mac/Linux: `source venv/bin/activate` (You’ll see `(venv)` in the prompt).
+
+3. **Install Python Packages**:
+   - Run this command to install everything we need:
+     ```
+     pip install transformers==4.41.2 torch==2.4.0 datasets==2.20.0 onnx==1.16.1 onnxruntime==1.18.1 flask==3.0.3
+     ```
+   - This installs:
+     - `transformers`: For CodeT5 model and tokenizer.
+     - `torch`: For training the model.
+     - `datasets`: For handling your sample data.
+     - `onnx` and `onnxruntime`: For model export (optional here).
+     - `flask`: For the inference API.
+   - Wait a few minutes for installation. If you see errors, ensure Python 3.12.5 is in your PATH (`python --version` should show 3.12.5).
+
+---
+
+### Step 2: Prepare Your 10 Samples
+1. **Folder Structure**:
+   - Inside `iib-spring-ai`, create:
+     ```
+     iib-spring-ai/
+     ├── training-data/
+     │   ├── input/
+     │   │   ├── sample1/
+     │   │   ├── sample2/
+     │   │   └── ... (up to sample10)
+     │   └── output/
+     │       ├── sample1/
+     │       ├── sample2/
+     │       └── ... (up to sample10)
+     ```
+   - Use a file explorer or terminal:
+     - Windows: Right-click > New > Folder.
+     - Mac/Linux: `mkdir -p training-data/input/sample1 training-data/output/sample1` (repeat for sample2 to sample10).
+
+2. **Add Your Samples**:
+   - **Input**: Place your IIB files in `input/sample1/`, `input/sample2/`, etc.
+     - Example for `sample1`:
+       - `training-data/input/sample1/OrderFlow.msgflow`:
+         ```xml
+         <flow name="OrderFlow">
+             <node type="Mapping" module="OrderMapping"/>
+             <node type="ResetContentDescriptor" format="JSON"/>
+         </flow>
+         ```
+       - `training-data/input/sample1/OrderMapping.esql`:
+         ```sql
+         CREATE COMPUTE MODULE OrderMapping
+         BEGIN
+             SET OutputRoot.JSON.Data.orderId = InputRoot.JSON.Data.id;
+             SET OutputRoot.JSON.Data.amount = InputRoot.JSON.Data.total * 1.1;
+         END;
+         ```
+       - `training-data/input/sample1/Order.mxsd`:
+         ```xml
+         <xs:schema>
+             <xs:element name="orderId" type="xs:string"/>
+             <xs:element name="amount" type="xs:decimal"/>
+         </xs:schema>
+         ```
+   - **Output**: Place Spring Boot files in `output/sample1/` with subfolders:
+     - Example for `sample1`:
+       - `training-data/output/sample1/controllers/OrderController.java`:
+         ```java
+         package com.example.generated.controllers;
+         import com.example.generated.services.OrderService;
+         import org.springframework.web.bind.annotation.RestController;
+         import org.springframework.web.bind.annotation.PostMapping;
+         @RestController
+         public class OrderController {
+             private final OrderService orderService;
+             public OrderController(OrderService orderService) { this.orderService = orderService; }
+             @PostMapping("/order")
+             public String process() { return orderService.process(); }
+         }
+         ```
+       - `training-data/output/sample1/services/OrderService.java`:
+         ```java
+         package com.example.generated.services;
+         import org.springframework.stereotype.Service;
+         @Service
+         public class OrderService {
+             public String process() { return "Order processed"; }
+         }
+         ```
+       - `training-data/output/sample1/connectors/OrderBindyConnector.java`:
+         ```java
+         package com.example.generated.connectors;
+         import org.apache.camel.dataformat.bindy.annotation.FixedLengthRecord;
+         import org.apache.camel.dataformat.bindy.annotation.DataField;
+         @FixedLengthRecord(length = 20)
+         public class OrderBindyConnector {
+             @DataField(pos = 1, length = 10)
+             private String orderId;
+             @DataField(pos = 2, length = 10, precision = 2)
+             private Double amount;
+             public String getOrderId() { return orderId; }
+             public void setOrderId(String orderId) { this.orderId = orderId; }
+             public Double getAmount() { return amount; }
+             public void setAmount(Double amount) { this.amount = amount; }
+         }
+         ```
+   - Repeat for all 10 samples, varying components as needed (e.g., Sample 2 might skip `connectors/`).
+
+3. **Verify**:
+   - Ensure each `input/sampleX/` has IIB files and `output/sampleX/` has corresponding Spring Boot files in subfolders (`controllers/`, `services/`, etc.).
+
+---
+
+### Step 3: Train CodeT5 Model
+1. **Create Training Script**:
+   - In `iib-spring-ai`, create a file called `train_codet5.py`:
+     - Windows: Open Notepad, paste the code below, save as `train_codet5.py`.
+     - Mac/Linux: `nano train_codet5.py`, paste, then Ctrl+O, Enter, Ctrl+X.
+```python
+from transformers import T5Tokenizer, T5ForConditionalGeneration, Trainer, TrainingArguments
+from datasets import Dataset
+import os
+
+# Load tokenizer and model
+tokenizer = T5Tokenizer.from_pretrained("Salesforce/codet5-base")
+model = T5ForConditionalGeneration.from_pretrained("Salesforce/codet5-base")
+
+# Prepare dataset
+input_dir = "training-data/input"
+output_dir = "training-data/output"
+data = []
+
+for folder in os.listdir(input_dir):
+    iib_files = os.path.join(input_dir, folder)
+    spring_files = os.path.join(output_dir, folder)
+    
+    # Combine IIB files
+    iib_content = ""
+    for file in os.listdir(iib_files):
+        with open(os.path.join(iib_files, file), "r", encoding="utf-8") as f:
+            iib_content += f"--- {file} ---\n{f.read()}\n"
+    
+    # Combine Spring Boot files from subfolders
+    spring_content = ""
+    for subfolder in ["controllers", "services", "models", "connectors"]:
+        subfolder_path = os.path.join(spring_files, subfolder)
+        if os.path.exists(subfolder_path):
+            for file in os.listdir(subfolder_path):
+                with open(os.path.join(subfolder_path, file), "r", encoding="utf-8") as f:
+                    spring_content += f"--- {subfolder}/{file} ---\n{f.read()}\n"
+    
+    data.append({"input": iib_content, "output": spring_content})
+
+# Convert to Dataset
+dataset = Dataset.from_list(data)
+
+# Tokenize data
+def preprocess(examples):
+    inputs = tokenizer(examples["input"], padding="max_length", truncation=True, max_length=512)
+    outputs = tokenizer(examples["output"], padding="max_length", truncation=True, max_length=2048)
+    inputs["labels"] = outputs["input_ids"]
+    return inputs
+
+tokenized_dataset = dataset.map(preprocess, batched=True)
+
+# Training arguments
+training_args = TrainingArguments(
+    output_dir="./model-output",
+    num_train_epochs=50,
+    per_device_train_batch_size=1,
+    warmup_steps=5,
+    weight_decay=0.01,
+    logging_dir="./logs",
+    logging_steps=5,
+    save_strategy="epoch",
+)
+
+# Trainer
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_dataset,
+)
+
+# Train
+trainer.train()
+
+# Save model
+model.save_pretrained("./trained-codet5")
+tokenizer.save_pretrained("./trained-codet5")
+
+print("Training complete. Model saved in ./trained-codet5")
+```
+
+2. **Run Training**:
+   - In the terminal (with `(venv)` active):
+     - `python train_codet5.py`
+   - This will:
+     - Download CodeT5 (first run only).
+     - Train for 50 epochs (30-60 minutes on a CPU, faster with GPU).
+     - Save the model in `iib-spring-ai/trained-codet5/`.
+   - You’ll see progress logs every 5 steps. When done, it prints “Training complete.”
+
+---
+
+### Step 4: Create Flask API for Inference
+1. **Create Flask Script**:
+   - In `iib-spring-ai`, create `flask_api.py`:
+```python
+from flask import Flask, request
+from transformers import T5Tokenizer, T5ForConditionalGeneration
+import torch
+
+app = Flask(__name__)
+tokenizer = T5Tokenizer.from_pretrained("./trained-codet5")
+model = T5ForConditionalGeneration.from_pretrained("./trained-codet5")
+
+@app.route("/generate", methods=["POST"])
+def generate():
+    iib_content = request.json["input"]
+    inputs = tokenizer(iib_content, return_tensors="pt", padding="max_length", truncation=True, max_length=512)
+    outputs = model.generate(inputs["input_ids"], max_length=2048, num_beams=5, early_stopping=True)
+    generated_code = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return {"code": generated_code}
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5001)
+```
+
+2. **Run Flask API**:
+   - In a new terminal window (keep `(venv)` active):
+     - `cd` to `iib-spring-ai`.
+     - `python flask_api.py`
+   - It starts a server at `http://localhost:5001`. Leave this running.
+
+---
+
+### Step 5: Set Up Spring Boot in STS
+1. **Create Project**:
+   - Open STS.
+   - `File > New > Spring Starter Project`.
+   - Name: `iib-spring-ai`.
+   - Group: `com.example`.
+   - Artifact: `iib-spring-ai`.
+   - Java Version: 17.
+   - Dependencies: `Spring Web`, `Lombok`.
+   - Click `Finish`.
+
+2. **Update `pom.xml`**:
+   - Open `pom.xml`, replace with:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.4</version>
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>iib-spring-ai</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>17</java.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel.springboot</groupId>
+            <artifactId>camel-spring-boot-starter</artifactId>
+            <version>4.4.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.camel</groupId>
+            <artifactId>camel-bindy</artifactId>
+            <version>4.4.0</version>
+        </dependency>
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+            <version>2.15.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>1.18.32</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+   - Right-click project > `Maven > Update Project` > `OK`.
+
+3. **Add Java Files**:
+   - In `src/main/java/com/example/iibspringai/`:
+     - **`IibSpringAiApplication.java`**:
+       ```java
+       package com.example.iibspringai;
+
+       import com.example.iibspringai.generator.SpringCodeGenerator;
+       import org.springframework.boot.SpringApplication;
+       import org.springframework.boot.autoconfigure.SpringBootApplication;
+       import org.springframework.context.annotation.Bean;
+
+       @SpringBootApplication
+       public class IibSpringAiApplication {
+           public static void main(String[] args) {
+               SpringApplication.run(IibSpringAiApplication.class, args);
+           }
+
+           @Bean
+           public SpringCodeGenerator springCodeGenerator() {
+               return new SpringCodeGenerator();
+           }
+       }
+       ```
+     - Create `parser` package, add `IIBParser.java`:
+       ```java
+       package com.example.iibspringai.parser;
+
+       import java.io.File;
+       import java.nio.file.Files;
+
+       public class IIBParser {
+           public String parseIIBFiles(File[] files) throws Exception {
+               StringBuilder combinedContent = new StringBuilder();
+               for (File file : files) {
+                   combinedContent.append("--- ").append(file.getName()).append(" ---\n")
+                                  .append(Files.readString(file.toPath())).append("\n");
+               }
+               return combinedContent.toString();
+           }
+       }
+       ```
+     - Create `generator` package, add `SpringCodeGenerator.java`:
+       ```java
+       package com.example.iibspringai.generator;
+
+       import org.springframework.web.client.RestTemplate;
+       import java.io.File;
+       import java.io.FileWriter;
+       import java.util.Map;
+
+       public class SpringCodeGenerator {
+           private final RestTemplate restTemplate = new RestTemplate();
+
+           public void generate(String iibContent, String outputDir) throws Exception {
+               String url = "http://localhost:5001/generate";
+               Map<String, String> request = Map.of("input", iibContent);
+               Map<String, String> response = restTemplate.postForObject(url, request, Map.class);
+               String generatedCode = response.get("code");
+               String[] files = generatedCode.split("(?=--- .+? ---)");
+
+               File baseDir = new File(outputDir);
+               baseDir.mkdirs();
+
+               for (String fileContent : files) {
+                   if (fileContent.trim().isEmpty()) continue;
+                   String filePath = fileContent.split("\n")[0].replace("--- ", "").replace(" ---", "");
+                   String[] parts = filePath.split("/");
+                   String folder = parts[0];
+                   String fileName = parts[1];
+                   if (!fileName.endsWith(".java")) continue;
+                   String content = fileContent.replaceFirst("--- .+? ---\n", "");
+
+                   File dir = new File(baseDir, folder);
+                   dir.mkdirs();
+                   FileWriter writer = new FileWriter(new File(dir, fileName));
+                   writer.write(content.trim());
+                   writer.close();
+               }
+           }
+       }
+       ```
+     - Create `controller` package, add `AIController.java`:
+       ```java
+       package com.example.iibspringai.controller;
+
+       import com.example.iibspringai.generator.SpringCodeGenerator;
+       import com.example.iibspringai.parser.IIBParser;
+       import org.springframework.web.bind.annotation.PostMapping;
+       import org.springframework.web.bind.annotation.RequestParam;
+       import org.springframework.web.bind.annotation.RestController;
+       import org.springframework.web.multipart.MultipartFile;
+
+       import java.io.File;
+
+       @RestController
+       public class AIController {
+           private final IIBParser parser = new IIBParser();
+           private final SpringCodeGenerator generator;
+
+           public AIController(SpringCodeGenerator generator) {
+               this.generator = generator;
+           }
+
+           @PostMapping("/generate")
+           public String generateCode(@RequestParam("iibFiles") MultipartFile[] files) throws Exception {
+               File[] tempFiles = new File[files.length];
+               for (int i = 0; i < files.length; i++) {
+                   tempFiles[i] = File.createTempFile("iib", ".tmp");
+                   files[i].transferTo(tempFiles[i]);
+               }
+
+               String iibContent = parser.parseIIBFiles(tempFiles);
+               generator.generate(iibContent, "./generated-code");
+
+               for (File tempFile : tempFiles) {
+                   tempFile.delete();
+               }
+               return "Code generated in ./generated-code";
+           }
+       }
+       ```
+
+---
+
+### Step 6: Test the Solution
+1. **Run Flask API**:
+   - In `iib-spring-ai` terminal: `python flask_api.py`.
+   - Keep this running.
+
+2. **Run Spring Boot**:
+   - In STS: Right-click `IibSpringAiApplication.java` > `Run As > Spring Boot App`.
+
+3. **Test with Postman**:
+   - Download Postman if you don’t have it: [postman.com/downloads/](https://www.postman.com/downloads/).
+   - Open Postman:
+     - Click `New` > `HTTP Request`.
+     - Set method to `POST`, URL to `http://localhost:8080/generate`.
+     - Go to `Body` tab, select `form-data`.
+     - Add key `iibFiles`, set type to `File`, upload new IIB files (e.g., `NewFlow.msgflow`, `NewMapping.esql`, `New.mxsd`).
+     - Click `Send`.
+   - Check `iib-spring-ai/generated-code/` for output:
+     - E.g., `generated-code/connectors/NewBindyConnector.java` with `@FixedLengthRecord`.
+
+4. **Example Input/Output**:
+   - Input:
+     - `NewFlow.msgflow`: `<flow name="NewFlow"><node type="Mapping" module="NewMapping"/></flow>`
+     - `NewMapping.esql`: `CREATE COMPUTE MODULE NewMapping BEGIN SET OutputRoot.JSON.Data.result = InputRoot.JSON.Data.input; END;`
+     - `New.mxsd`: `<xs:element name="result" type="xs:string"/>`
+   - Output (folder-wise):
+     - `generated-code/controllers/NewController.java`
+     - `generated-code/services/NewService.java`
+     - `generated-code/connectors/NewBindyConnector.java` (with `@FixedLengthRecord`).
+
+---
+
+### Troubleshooting
+- **Python Errors**:
+  - “Module not found”: Re-run `pip install` command.
+  - “Permission denied”: Run terminal as admin (Windows) or use `sudo` (Mac/Linux).
+- **Flask Not Running**: Ensure port 5001 is free (kill other processes if needed).
+- **Spring Boot Fails**: Check `pom.xml` dependencies and Flask API is running.
+- **Output Incomplete**: Increase `num_train_epochs` to 100 in `train_codet5.py` and retrain.
+
+---
+
+### Why It Works
+- **After Training**: CodeT5 learns your sample patterns (folder-wise components, `@FixedLengthRecord`, new annotations) and generates everything accordingly.
+- **Variability**: It adapts to missing components or new annotations based on what’s in your 10 samples.
+- **Beginner-Friendly**: Each step is simple—run a command, copy-paste code, or click in STS/Postman.
+
+You’re all set! Let me know if you hit any snags or need help with specific samples.
