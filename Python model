@@ -1,0 +1,220 @@
+Since you don’t have a D: drive and space on your C: drive is limited, I’ll further optimize the process to use even less memory and disk space. The goal is to keep the solution functional for your complex IIB-to-Spring Boot conversion (with `esql`, `msgflow`, `subflow`, `json`, `yaml` inputs and folder-wise Java outputs) while minimizing resource usage beyond the previous optimization. Given your constraints, we’ll use an even smaller model, reduce training overhead further, and provide an option to run parts of the process on-demand rather than storing everything at once. Here’s the leanest approach possible that still involves training for accuracy.
+
+---
+
+### Ultra-Lean Training Approach
+- **Model**: Use `Salesforce/codet5p-220m` (220M parameters, ~220 MB) instead of `codet5-small` (~60M parameters, ~240 MB).
+- **Training**: Minimize epochs, batch size, and sequence length; save only the final model.
+- **Space**: Target <500 MB total usage (including venv, model, and temporary files).
+
+---
+
+### Step 1: Clean Up and Verify Space
+#### 1.1 Check Current Space
+- Right-click C: drive in File Explorer > Properties. Note free space (e.g., 2 GB).
+
+#### 1.2 Clear Existing Files
+- In `C:\Users\z313579\Desktop\iib-spring-ai`:
+  - Delete `model-output`, `trained-codet5`, `logs`, and `codet5.onnx` if they exist:
+    - Command Prompt: `cd C:\Users\z313579\Desktop\iib-spring-ai`, then `rmdir /S /Q model-output trained-codet5 logs` and `del codet5.onnx`.
+- This frees up space from previous attempts.
+
+#### 1.3 Activate Virtual Environment
+- Open Command Prompt: `cd C:\Users\z313579\Desktop\iib-spring-ai`.
+- Activate: `venv\Scripts\activate` (see `(venv)`).
+- Uninstall all packages to start fresh:
+  - `pip uninstall torch transformers datasets sentencepiece flask -y`.
+
+#### 1.4 Install Minimal Dependencies
+- Install only what’s needed:
+  - Run: `pip install torch==2.3.1+cpu transformers==4.41.2 datasets==2.20.0 sentencepiece==0.2.0 flask==3.0.3 -f https://download.pytorch.org/whl/torch_stable.html`.
+  - **Space**: ~300-400 MB for venv (much less than before due to CPU-only PyTorch).
+
+---
+
+### Step 2: Prepare Minimal Training Data
+- Keep your `training-data/input/` and `training-data/output/` structure, but reduce sample size if possible:
+  - Use 5-10 representative samples (fewer if space is very tight, e.g., 5 samples).
+- Example (same as before, just fewer samples):
+  ```
+  iib-spring-ai/
+  ├── training-data/
+  │   ├── input/
+  │   │   ├── sample1/
+  │   │   │   ├── OrderFlow.msgflow
+  │   │   │   ├── OrderMapping.esql
+  │   │   │   ├── OrderSubflow.subflow
+  │   │   │   ├── OrderSwagger.json
+  │   │   │   └── Order.mxsd
+  │   │   ├── sample2/
+  │   │   └── ... (up to sample5 or 10)
+  │   └── output/
+  │       ├── sample1/
+  │       │   ├── controllers/
+  │       │   ├── services/
+  │       │   ├── models/
+  │       │   └── connectors/
+  │       ├── sample2/
+  │       └── ... (up to sample5 or 10)
+  ```
+- **Space**: ~1-2 MB per sample pair, so 5 samples = ~5-10 MB.
+
+---
+
+### Step 3: Create Ultra-Lean Training Script
+- Create `train_codet5.py`:
+```python
+from transformers import T5Tokenizer, T5ForConditionalGeneration, Trainer, TrainingArguments
+from datasets import Dataset
+import os
+
+# Use smallest CodeT5 variant
+tokenizer = T5Tokenizer.from_pretrained("Salesforce/codet5p-220m")  # ~220 MB
+model = T5ForConditionalGeneration.from_pretrained("Salesforce/codet5p-220m")
+
+# Prepare dataset
+input_dir = "training-data/input"
+output_dir = "training-data/output"
+data = []
+
+for folder in os.listdir(input_dir):
+    iib_files = os.path.join(input_dir, folder)
+    spring_files = os.path.join(output_dir, folder)
+    
+    iib_content = ""
+    for file in os.listdir(iib_files):
+        with open(os.path.join(iib_files, file), "r", encoding="utf-8") as f:
+            iib_content += f"--- {file} ---\n{f.read()}\n"
+    
+    spring_content = ""
+    for subfolder in ["controllers", "services", "models", "connectors"]:
+        subfolder_path = os.path.join(spring_files, subfolder)
+        if os.path.exists(subfolder_path):
+            for file in os.listdir(subfolder_path):
+                with open(os.path.join(subfolder_path, file), "r", encoding="utf-8") as f:
+                    spring_content += f"--- {subfolder}/{file} ---\n{f.read()}\n"
+    
+    data.append({"input": iib_content, "output": spring_content})
+
+# Convert to Dataset
+dataset = Dataset.from_list(data)
+
+# Minimize memory usage
+def preprocess(examples):
+    inputs = tokenizer(examples["input"], padding="max_length", truncation=True, max_length=128)  # Very short
+    outputs = tokenizer(examples["output"], padding="max_length", truncation=True, max_length=512)  # Shortened
+    inputs["labels"] = outputs["input_ids"]
+    return inputs
+
+tokenized_dataset = dataset.map(preprocess, batched=True)
+
+# Lean training arguments
+training_args = TrainingArguments(
+    output_dir="./model-output",
+    num_train_epochs=10,  # Minimal epochs
+    per_device_train_batch_size=1,
+    warmup_steps=2,
+    weight_decay=0.01,
+    logging_dir="./logs",
+    logging_steps=5,
+    save_strategy="no",  # No checkpoints, save only at end
+    evaluation_strategy="no",
+)
+
+# Trainer
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_dataset,
+)
+
+# Train
+trainer.train()
+
+# Save only final model
+model.save_pretrained("./trained-codet5")
+tokenizer.save_pretrained("./trained-codet5")
+
+# Immediate cleanup
+if os.path.exists("./model-output"):
+    os.system("rmdir /S /Q .\\model-output")
+if os.path.exists("./logs"):
+    os.system("rmdir /S /Q .\\logs")
+
+print("Training complete. Model saved in ./trained-codet5")
+```
+
+#### Optimizations:
+- **Smallest Model**: `codet5p-220m` (~220 MB).
+- **Short Sequences**: `max_length=128` (input), `512` (output).
+- **Few Epochs**: 10 instead of 30.
+- **No Checkpoints**: `save_strategy="no"`, saves only final model.
+- **Cleanup**: Deletes temporary folders immediately.
+- **Space**: ~220 MB (model) + ~100 MB (temp during training) = ~320 MB total.
+- **Time**: ~10-20 minutes on CPU.
+
+#### Run:
+- `python train_codet5.py`.
+
+---
+
+### Step 4: Create Lean Flask API
+- Create `flask_api.py`:
+```python
+from flask import Flask, request
+from transformers import T5Tokenizer, T5ForConditionalGeneration
+
+app = Flask(__name__)
+tokenizer = T5Tokenizer.from_pretrained("./trained-codet5")
+model = T5ForConditionalGeneration.from_pretrained("./trained-codet5")
+
+@app.route("/generate", methods=["POST"])
+def generate():
+    iib_content = request.json["input"]
+    inputs = tokenizer(iib_content, return_tensors="pt", padding="max_length", truncation=True, max_length=128)
+    outputs = model.generate(inputs["input_ids"], max_length=512, num_beams=3, early_stopping=True)
+    generated_code = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return {"code": generated_code}
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5001)
+```
+- **Space**: ~220 MB (model loaded in memory) + ~50 MB (Flask) = ~270 MB.
+- Run: `python flask_api.py`.
+
+---
+
+### Step 5: Set Up Spring Boot (No Change)
+- Use the same Spring Boot setup from my previous response (Step 5 in the simplified approach). It integrates with the Flask API and doesn’t need the ONNX file, saving space.
+
+---
+
+### Step 6: Test
+- **Run Flask**: `python flask_api.py`.
+- **Run Spring Boot**: In STS, `Run As > Spring Boot App`.
+- **Postman**:
+  - `POST http://localhost:8080/generate`.
+  - `form-data`, Key: `iibFiles`, Value: Upload IIB files.
+  - Check `generated-code/` for output.
+
+---
+
+### Total Space Usage
+- **Venv**: ~300 MB (dependencies).
+- **Model**: ~220 MB (`trained-codet5`).
+- **Training Temp**: ~100 MB (deleted after training).
+- **Samples**: ~5-10 MB (5-10 samples).
+- **Total**: ~530-540 MB (peak during training, ~520 MB after).
+
+#### If Still Too Tight:
+- **Reduce Samples**: Use 3 samples (~3-6 MB).
+- **Delete Venv After Training**: After `train_codet5.py`, run `rmdir /S /Q venv` and reinstall only Flask (`pip install flask==3.0.3`) in a new venv for the API (~50 MB).
+
+---
+
+### Final Notes
+- This uses <600 MB total, fitting even on a nearly full C: drive.
+- It still trains on your diverse inputs and outputs, capturing `@FixedLengthRecord`, folder structure, and new annotations from your samples.
+- If it fails due to space, let me know your exact free space (e.g., 300 MB), and I’ll switch to a pure rule-based approach with no training.
+
+Try this and let me know how it goes!
